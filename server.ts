@@ -119,11 +119,30 @@ async function initDb() {
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
+  const allowedOrigin = process.env.APP_URL?.trim();
+  const isCrossOriginDeployment = Boolean(allowedOrigin);
 
   app.use(helmet({
     contentSecurityPolicy: false, // Disable CSP in dev to avoid interference with Vite
     frameguard: false, // AI Studio needs to embed the app in an iframe
   }));
+
+  app.use((req, res, next) => {
+    const requestOrigin = req.headers.origin;
+    if (allowedOrigin && requestOrigin === allowedOrigin) {
+      res.header("Access-Control-Allow-Origin", allowedOrigin);
+      res.header("Access-Control-Allow-Credentials", "true");
+      res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+      res.header("Access-Control-Allow-Headers", "Content-Type, x-xsrf-token");
+      res.header("Vary", "Origin");
+    }
+
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(204);
+    }
+
+    next();
+  });
 
   app.use(express.json());
   app.use(cookieParser());
@@ -138,9 +157,9 @@ async function startServer() {
       token = crypto.randomBytes(32).toString("hex");
       // Use lax/none for iframe compatibility if needed, but strict should work if domain is same
       res.cookie(CSRF_COOKIE_NAME, token, { 
-        sameSite: "lax", 
+        sameSite: isCrossOriginDeployment ? "none" : "lax", 
         path: "/",
-        secure: process.env.NODE_ENV === "production" 
+        secure: process.env.NODE_ENV === "production" || isCrossOriginDeployment,
       });
     }
     

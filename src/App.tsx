@@ -42,6 +42,7 @@ import { BookCard } from './components/BookCard';
 import { UploadForm } from './components/UploadForm';
 import { ListSkeleton, SearchSkeleton } from './components/Skeleton';
 import { BOOKS, CATEGORIES, FORMATS, Screen, BookType } from './constants';
+import { buildApiUrl } from './api';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('home');
@@ -136,7 +137,9 @@ export default function App() {
         page: page.toString(),
         limit: "50"
       });
-      const response = await fetch(`/api/books?${params}`);
+      const response = await fetch(buildApiUrl(`/api/books?${params}`), {
+        credentials: 'include',
+      });
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: 'Unknown server error' }));

@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Upload, X, CheckCircle2, Image as ImageIcon, Link as LinkIcon, FileUp, AlertCircle } from 'lucide-react';
 import { CATEGORIES, FORMATS } from '../constants';
+import { API_BASE_URL, buildApiUrl } from '../api';
 
 interface UploadFormProps {
   onSuccess: (book: unknown) => void;
@@ -32,7 +33,9 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
   useEffect(() => {
     const fetchCsrf = async () => {
       try {
-        const res = await fetch('/api/csrf-token');
+        const res = await fetch(buildApiUrl('/api/csrf-token'), {
+          credentials: 'include',
+        });
         const data = await res.json();
         setCsrfToken(data.token);
       } catch (err) {
@@ -67,7 +70,9 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
       throw new Error(
         window.location.port === '5173'
           ? 'The app is running on Vite dev server instead of the Express API server. Open the app from http://localhost:3000 and try again.'
-          : 'The server returned an HTML page instead of API JSON. Please verify the app is running from the Express server.'
+          : API_BASE_URL
+            ? `The configured API base URL (${API_BASE_URL}) returned an HTML page instead of API JSON.`
+            : 'The server returned an HTML page instead of API JSON. Please verify the app is running from the Express server.'
       );
     }
 
@@ -87,8 +92,10 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
     setIsSubmitting(true);
     
     try {
-      const response = await fetch('/api/books', {
+      const response = await fetch(buildApiUrl('/api/books'), {
         method: 'POST',
+        credentials: 'include',
+        mode: API_BASE_URL ? 'cors' : 'same-origin',
         headers: { 
           'Content-Type': 'application/json',
           'x-xsrf-token': csrfToken || ''
