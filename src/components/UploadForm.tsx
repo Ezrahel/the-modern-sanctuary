@@ -51,6 +51,29 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
     return null;
   };
 
+  const parseResponseBody = async (response: Response) => {
+    const contentType = response.headers.get('content-type') || '';
+    const rawText = await response.text();
+
+    if (contentType.includes('application/json')) {
+      try {
+        return rawText ? JSON.parse(rawText) : null;
+      } catch {
+        throw new Error('The server returned invalid JSON.');
+      }
+    }
+
+    if (rawText.trim().startsWith('<!doctype') || rawText.trim().startsWith('<html')) {
+      throw new Error(
+        window.location.port === '5173'
+          ? 'The app is running on Vite dev server instead of the Express API server. Open the app from http://localhost:3000 and try again.'
+          : 'The server returned an HTML page instead of API JSON. Please verify the app is running from the Express server.'
+      );
+    }
+
+    return rawText;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -77,17 +100,26 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
         }),
       });
 
+      const responseBody = await parseResponseBody(response);
+
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || 'Upload failed');
+        if (responseBody && typeof responseBody === 'object' && 'error' in responseBody) {
+          throw new Error(String(responseBody.error));
+        }
+        if (typeof responseBody === 'string' && responseBody.trim()) {
+          throw new Error(responseBody);
+        }
+        throw new Error('Upload failed');
       }
 
-      const createdBook = await response.json();
+      if (!responseBody || typeof responseBody !== 'object') {
+        throw new Error('The server did not return the uploaded book details.');
+      }
 
       setIsSubmitting(false);
       setIsSuccess(true);
       setTimeout(() => {
-        onSuccess(createdBook);
+        onSuccess(responseBody);
       }, 2000);
     } catch (err: any) {
       console.error(err);
