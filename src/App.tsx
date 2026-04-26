@@ -315,11 +315,11 @@ export default function App() {
           </div>
           
           <div className="md:col-span-12 lg:col-span-5 relative flex justify-center lg:justify-end mt-4 md:mt-0">
-            <div className="w-64 md:w-80 h-[380px] md:h-[480px] bg-white rounded-xl shadow-2xl overflow-hidden animate-float">
+            <div className="w-64 md:w-80 h-[380px] md:h-[480px] bg-gradient-to-b from-stone-50 to-stone-100 rounded-xl shadow-2xl overflow-hidden animate-float p-3">
               <img 
                 src="/Sacred+Rhythms.png" 
                 alt="The Sacred Rhythm: Walking with Christ" 
-                className="w-full h-full object-cover"
+                className="w-full h-full object-contain rounded-lg"
               />
             </div>
             <div className="absolute -z-10 w-48 md:w-64 h-48 md:h-64 bg-primary/10 rounded-full blur-[80px] md:blur-[100px] bottom-0 left-1/4 lg:left-0" />
