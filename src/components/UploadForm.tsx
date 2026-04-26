@@ -4,7 +4,7 @@ import { Upload, X, CheckCircle2, Image as ImageIcon, Link as LinkIcon, FileUp, 
 import { CATEGORIES, FORMATS } from '../constants';
 
 interface UploadFormProps {
-  onSuccess: () => void;
+  onSuccess: (book: unknown) => void;
   onCancel: () => void;
 }
 
@@ -82,10 +82,12 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
         throw new Error(errData.error || 'Upload failed');
       }
 
+      const createdBook = await response.json();
+
       setIsSubmitting(false);
       setIsSuccess(true);
       setTimeout(() => {
-        onSuccess();
+        onSuccess(createdBook);
       }, 2000);
     } catch (err: any) {
       console.error(err);

@@ -38,7 +38,6 @@ import {
   Settings2,
   Type
 } from 'lucide-react';
-import Fuse from 'fuse.js';
 import { BookCard } from './components/BookCard';
 import { UploadForm } from './components/UploadForm';
 import { ListSkeleton, SearchSkeleton } from './components/Skeleton';
@@ -112,6 +111,20 @@ export default function App() {
   const [totalPages, setTotalPages] = useState(1);
   const [totalBooks, setTotalBooks] = useState(0);
 
+  const normalizeBook = (rawBook: any): BookType => ({
+    id: String(rawBook?.id ?? crypto.randomUUID()),
+    title: String(rawBook?.title ?? 'Untitled'),
+    author: String(rawBook?.author ?? 'Unknown Author'),
+    cover: String(rawBook?.cover || '/Sacred+Rhythms.png'),
+    category: String(rawBook?.category ?? 'Uncategorized'),
+    rating: rawBook?.rating != null ? Number(rawBook.rating) : undefined,
+    pages: rawBook?.pages != null ? Number(rawBook.pages) : undefined,
+    format: rawBook?.format ? String(rawBook.format) : undefined,
+    uploader: rawBook?.uploader ? String(rawBook.uploader) : undefined,
+    description: rawBook?.description ? String(rawBook.description) : undefined,
+    dateAdded: String(rawBook?.dateAdded ?? rawBook?.date_added ?? new Date().toISOString()),
+  });
+
   const fetchBooks = async (page: number = 1) => {
     setIsLoading(true);
     try {
@@ -134,12 +147,12 @@ export default function App() {
 
       const data = await response.json();
       if (data && typeof data === 'object' && !Array.isArray(data)) {
-        setBooks(data.books || []);
+        setBooks(Array.isArray(data.books) ? data.books.map(normalizeBook) : []);
         setTotalPages(data.totalPages || 1);
         setTotalBooks(data.total || 0);
         setCurrentPage(data.page || 1);
       } else {
-        setBooks(Array.isArray(data) ? data : []);
+        setBooks(Array.isArray(data) ? data.map(normalizeBook) : []);
       }
     } catch (err) {
       console.error(err);
@@ -166,6 +179,21 @@ export default function App() {
     if (book) setSelectedBook(book);
     setCurrentScreen(screen);
     window.scrollTo(0, 0);
+  };
+
+  const handleUploadSuccess = (rawBook: unknown) => {
+    const uploadedBook = normalizeBook(rawBook);
+
+    setBooks((prev) => [uploadedBook, ...prev.filter((book) => book.id !== uploadedBook.id)]);
+    setTotalBooks((prev) => prev + 1);
+    setTotalPages((prev) => Math.max(prev, 1));
+    setSelectedBook(uploadedBook);
+    setCurrentPage(1);
+    setSearchQuery('');
+    setSelectedCategory('All');
+    setSelectedFormat('All');
+    setSortBy('newest');
+    navigateTo('library');
   };
 
   const Nav = () => {
@@ -281,7 +309,7 @@ export default function App() {
     </footer>
   );
 
-  const HomeScreen = () => (
+  const renderHomeScreen = () => (
     <motion.div 
       initial={{ opacity: 0 }} 
       animate={{ opacity: 1 }} 
@@ -430,45 +458,7 @@ export default function App() {
     </motion.div>
   );
 
-  const LibraryScreen = () => {
-    // Process books: Filter first, then Sort
-    const processedBooks = React.useMemo(() => {
-      let filtered = BOOKS;
-
-      if (searchQuery) {
-        const fuse = new Fuse(BOOKS, {
-          keys: [
-            { name: 'title', weight: 1.0 },
-            { name: 'author', weight: 0.7 },
-            { name: 'category', weight: 0.4 },
-            { name: 'description', weight: 0.3 }
-          ],
-          threshold: 0.3,
-          includeScore: true,
-          useExtendedSearch: true,
-          distance: 100,
-          location: 0,
-          minMatchCharLength: 2
-        });
-        filtered = fuse.search(searchQuery).map(result => result.item);
-      }
-
-      return filtered.filter(book => {
-        const matchesCategory = selectedCategory === 'All' || book.category === selectedCategory;
-        const matchesFormat = selectedFormat === 'All' || book.format?.includes(selectedFormat);
-        return matchesCategory && matchesFormat;
-      }).sort((a, b) => {
-        switch (sortBy) {
-          case 'title': return a.title.localeCompare(b.title);
-          case 'author': return a.author.localeCompare(b.author);
-          case 'rating': return (b.rating || 0) - (a.rating || 0);
-          case 'oldest': return new Date(a.dateAdded).getTime() - new Date(b.dateAdded).getTime();
-          case 'newest':
-          default: return new Date(b.dateAdded).getTime() - new Date(a.dateAdded).getTime();
-        }
-      });
-    }, [searchQuery, selectedCategory, selectedFormat, sortBy]);
-
+  const renderLibraryScreen = () => {
     return (
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="pt-32">
         <div className="max-w-7xl mx-auto px-8">
@@ -737,7 +727,7 @@ export default function App() {
     );
   };
 
-  const SearchScreen = () => (
+  const renderSearchScreen = () => (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="pt-32">
       <div className="max-w-7xl mx-auto px-8">
         <section className="flex flex-col items-center text-center mb-24">
@@ -843,8 +833,8 @@ export default function App() {
     </motion.div>
   );
 
-  const DetailScreen = () => {
-    const book = selectedBook || BOOKS[10];
+  const renderDetailScreen = () => {
+    const book = selectedBook || books[0] || BOOKS[10];
     return (
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="pt-32 pb-24">
         <div className="max-w-7xl mx-auto px-8">
@@ -1199,7 +1189,7 @@ export default function App() {
     );
   };
 
-  const AboutScreen = () => (
+  const renderAboutScreen = () => (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="pt-32 pb-24">
       <div className="max-w-4xl mx-auto px-8 space-y-20">
         <section className="text-center space-y-6">
@@ -1291,11 +1281,11 @@ export default function App() {
     </motion.div>
   );
 
-  const UploadScreen = () => (
+  const renderUploadScreen = () => (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="pt-32 pb-24">
       <div className="max-w-7xl mx-auto px-8">
         <UploadForm 
-          onSuccess={() => navigateTo('library')} 
+          onSuccess={handleUploadSuccess}
           onCancel={() => navigateTo('home')} 
         />
       </div>
@@ -1304,13 +1294,13 @@ export default function App() {
 
   const renderScreen = () => {
     switch (currentScreen) {
-      case 'home': return <HomeScreen />;
-      case 'library': return <LibraryScreen />;
-      case 'search': return <SearchScreen />;
-      case 'detail': return <DetailScreen />;
-      case 'upload': return <UploadScreen />;
-      case 'about': return <AboutScreen />;
-      default: return <HomeScreen />;
+      case 'home': return renderHomeScreen();
+      case 'library': return renderLibraryScreen();
+      case 'search': return renderSearchScreen();
+      case 'detail': return renderDetailScreen();
+      case 'upload': return renderUploadScreen();
+      case 'about': return renderAboutScreen();
+      default: return renderHomeScreen();
     }
   };
 

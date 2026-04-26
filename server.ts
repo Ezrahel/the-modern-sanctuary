@@ -18,6 +18,16 @@ const { Pool } = pg;
 
 // Lazy initialization of database pool
 let pool: pg.Pool | null = null;
+let dbConfigErrorLogged = false;
+
+function isValidPostgresUrl(connectionString: string) {
+  try {
+    const parsed = new URL(connectionString);
+    return parsed.protocol === "postgres:" || parsed.protocol === "postgresql:";
+  } catch {
+    return false;
+  }
+}
 
 function getPool() {
   if (!pool) {
@@ -26,12 +36,33 @@ function getPool() {
       console.warn("COCKROACH_DB_URL is not defined. Database features will be unavailable.");
       return null;
     }
-    pool = new Pool({
-      connectionString,
-      ssl: {
-        rejectUnauthorized: false, // For development convenience, but consider stricter settings for production
-      },
-    });
+
+    if (!isValidPostgresUrl(connectionString)) {
+      if (!dbConfigErrorLogged) {
+        console.warn(
+          "COCKROACH_DB_URL is invalid. Expected a full postgres URL like " +
+          '"postgresql://username:password@host:26257/database?sslmode=require". ' +
+          "Database features will be unavailable until this is fixed."
+        );
+        dbConfigErrorLogged = true;
+      }
+      return null;
+    }
+
+    try {
+      pool = new Pool({
+        connectionString,
+        ssl: {
+          rejectUnauthorized: false, // For development convenience, but consider stricter settings for production
+        },
+      });
+    } catch (error) {
+      if (!dbConfigErrorLogged) {
+        console.warn("Failed to configure database pool. Database features will be unavailable.", error);
+        dbConfigErrorLogged = true;
+      }
+      return null;
+    }
   }
   return pool;
 }
