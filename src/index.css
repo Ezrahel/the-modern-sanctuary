@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --color-primary: #ff6600;
+  --color-charcoal: #333333;
+  --color-surface: #faf8fe;
+  --color-surface-container: #eeedf3;
+  --color-surface-container-low: #f4f3f8;
+  --color-surface-container-high: #e9e7ed;
+}
+
+@layer base {
+  body {
+    @apply font-sans bg-surface text-charcoal antialiased;
+  }
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+@keyframes float {
+  0% { transform: translateY(0px) rotate(2deg); }
+  50% { transform: translateY(-10px) rotate(1deg); }
+  100% { transform: translateY(0px) rotate(2deg); }
+}
+
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
