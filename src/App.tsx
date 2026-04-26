@@ -317,7 +317,7 @@ export default function App() {
           <div className="md:col-span-12 lg:col-span-5 relative flex justify-center lg:justify-end mt-4 md:mt-0">
             <div className="w-64 md:w-80 h-[380px] md:h-[480px] bg-white rounded-xl shadow-2xl overflow-hidden animate-float">
               <img 
-                src="/public/Sacred+Rhythms.png" 
+                src="/Sacred+Rhythms.png" 
                 alt="The Sacred Rhythm: Walking with Christ" 
                 className="w-full h-full object-cover"
               />
