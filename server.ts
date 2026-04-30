@@ -72,24 +72,24 @@ async function initDb() {
   if (!db) return;
 
   try {
-    // Quick check if the table already exists to avoid redundant heavy schema queries
-    const tableCheck = await db.query(`
-      SELECT 1 FROM information_schema.tables 
-      WHERE table_name = 'books' 
-      LIMIT 1;
-    `);
-
-    if (tableCheck.rowCount && tableCheck.rowCount > 0) {
-      // Table exists, check if we need to add columns (resilient to schema updates)
+    // Direct check: try a simple query on the books table
+    try {
+      await db.query('SELECT 1 FROM books LIMIT 1');
+      
+      // Table exists! Do a quick resilient check for missing columns if needed
       await db.query(`
         ALTER TABLE books
         ADD COLUMN IF NOT EXISTS file_name STRING,
         ADD COLUMN IF NOT EXISTS file_type STRING,
         ADD COLUMN IF NOT EXISTS file_size INT,
         ADD COLUMN IF NOT EXISTS file_data STRING;
-      `).catch(err => console.warn('Resilient column add failed (might already exist):', err.message));
+      `).catch(err => console.debug('Optional column check failed (likely already exists):', err.message));
+      
       console.log("Database initialized (schema already exists)");
       return;
+    } catch (err) {
+      // Table probably doesn't exist, proceed to full initialization
+      console.log('Books table not found or inaccessible, starting full initialization...');
     }
 
     console.log("Initializing database schema for the first time...");

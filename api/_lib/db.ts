@@ -107,30 +107,30 @@ export async function ensureDbInitialized() {
   if (!initPromise) {
     initPromise = (async () => {
       try {
-        // Quick check if the table already exists to avoid redundant heavy schema queries
-        const tableCheck = await db.query(`
-          SELECT 1 FROM information_schema.tables 
-          WHERE table_name = 'books' 
-          LIMIT 1;
-        `);
-
-        if (tableCheck.rowCount && tableCheck.rowCount > 0) {
-          // Table exists, check if we need to add columns (resilient to schema updates)
+        // Direct check: try a simple query on the books table
+        try {
+          await db.query('SELECT 1 FROM books LIMIT 1');
+          
+          // Table exists! Do a quick resilient check for missing columns if needed
           await db.query(`
             ALTER TABLE books
             ADD COLUMN IF NOT EXISTS file_name STRING,
             ADD COLUMN IF NOT EXISTS file_type STRING,
             ADD COLUMN IF NOT EXISTS file_size INT,
             ADD COLUMN IF NOT EXISTS file_data STRING;
-          `).catch(err => console.warn('Resilient column add failed (might already exist):', err.message));
+          `).catch(err => console.debug('Optional column check failed (likely already exists):', err.message));
+          
           return;
+        } catch (err) {
+          // Table probably doesn't exist, proceed to full initialization
+          console.log('Books table not found or inaccessible, starting full initialization...');
         }
 
         console.log('Initializing database schema for the first time...');
         
-        // Only run these if the table doesn't exist
+        // Optional extension
         await db.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`).catch(err => {
-          console.warn('Postgres extension pg_trgm could not be created/verified. Search might be slower.', err.message);
+          console.warn('Postgres extension pg_trgm could not be created/verified.', err.message);
         });
 
         await db.query(`
@@ -158,8 +158,12 @@ export async function ensureDbInitialized() {
         await seedBooks(db);
         console.log('Database schema initialization complete.');
       } catch (error: any) {
-        console.error('Database initialization error:', error);
-        initPromise = null; // Reset to allow retry on next request
+        console.error('CRITICAL: Database initialization failed:', {
+          message: error.message,
+          code: error.code,
+          detail: error.detail
+        });
+        initPromise = null; // Allow retry
         throw error;
       }
     })();
