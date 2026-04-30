@@ -85,10 +85,21 @@ async function initDb() {
         format STRING,
         uploader STRING,
         description STRING,
+        file_name STRING,
+        file_type STRING,
+        file_size INT,
+        file_data STRING,
         date_added TIMESTAMPTZ DEFAULT now(),
         search_vector TSVECTOR AS (to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(author, '') || ' ' || COALESCE(description, ''))) STORED
       );
       CREATE INDEX IF NOT EXISTS books_search_idx ON books USING GIN (search_vector);
+    `);
+    await db.query(`
+      ALTER TABLE books
+      ADD COLUMN IF NOT EXISTS file_name STRING,
+      ADD COLUMN IF NOT EXISTS file_type STRING,
+      ADD COLUMN IF NOT EXISTS file_size INT,
+      ADD COLUMN IF NOT EXISTS file_data STRING;
     `);
 
     // Seed if empty
@@ -144,7 +155,7 @@ async function startServer() {
     next();
   });
 
-  app.use(express.json());
+  app.use(express.json({ limit: "50mb" }));
   app.use(cookieParser());
 
   // Simple CSRF Protection
@@ -245,7 +256,7 @@ async function startServer() {
       const countResult = await db.query(`SELECT COUNT(*) FROM books${whereClause}`, params);
       const total = parseInt(countResult.rows[0].count);
 
-      const sql = `SELECT * FROM books${whereClause} ORDER BY ${orderBy} LIMIT ${limitNum} OFFSET ${offset}`;
+      const sql = `SELECT id, title, author, category, cover, rating, pages, format, uploader, description, file_name, file_type, file_size, date_added, file_data IS NOT NULL AS has_file FROM books${whereClause} ORDER BY ${orderBy} LIMIT ${limitNum} OFFSET ${offset}`;
       const result = await db.query(sql, params);
       
       res.json({
@@ -263,15 +274,16 @@ async function startServer() {
     const db = getPool();
     if (!db) return res.status(503).json({ error: "Database not configured" });
 
-    let { title, author, category, description, rating, pages, format, cover, uploader } = req.body;
+    let { title, author, category, description, rating, pages, format, cover, uploader, fileName, fileType, fileSize, fileData } = req.body;
 
     // Server-side validation
-    if (!title || !author || !category || !description) {
+    if (!title || !author || !category || !description || !fileName || !fileData) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
     const ratingNum = parseFloat(rating);
     const pagesNum = parseInt(pages);
+    const fileSizeNum = parseInt(fileSize);
 
     if (isNaN(ratingNum) || ratingNum < 1 || ratingNum > 5) {
       return res.status(400).json({ error: "Rating must be between 1 and 5" });
@@ -281,26 +293,122 @@ async function startServer() {
       return res.status(400).json({ error: "Pages must be at least 1" });
     }
 
+    if (isNaN(fileSizeNum) || fileSizeNum < 1 || fileSizeNum > 10 * 1024 * 1024) {
+      return res.status(400).json({ error: "Book file must be 10MB or smaller" });
+    }
+
     // XSS Sanitization
     title = xss(String(title));
     author = xss(String(author));
     category = xss(String(category));
     description = xss(String(description));
     format = xss(String(format || ""));
-    cover = xss(String(cover || ""));
+    cover = xss(String(cover || "/Sacred+Rhythms.png"));
     uploader = xss(String(uploader || "Community User"));
+    fileName = xss(String(fileName));
+    fileType = xss(String(fileType || "application/octet-stream"));
+    fileData = String(fileData);
+
+    if (!fileData.startsWith("data:")) {
+      return res.status(400).json({ error: "Invalid book file payload" });
+    }
 
     try {
       const result = await db.query(
-        `INSERT INTO books (title, author, category, description, rating, pages, format, cover, uploader)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO books (title, author, category, description, rating, pages, format, cover, uploader, file_name, file_type, file_size, file_data)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          RETURNING *`,
-        [title, author, category, description, ratingNum, pagesNum, format, cover, uploader]
+        [title, author, category, description, ratingNum, pagesNum, format, cover, uploader, fileName, fileType, fileSizeNum, fileData]
       );
       res.status(201).json(result.rows[0]);
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: "Failed to upload book" });
+    }
+  });
+
+  app.post("/api/books/batch", async (req, res) => {
+    const db = getPool();
+    if (!db) return res.status(503).json({ error: "Database not configured" });
+
+    const { books } = req.body;
+    if (!Array.isArray(books) || books.length === 0) {
+      return res.status(400).json({ error: "Books array is required" });
+    }
+
+    if (books.length > 20) {
+      return res.status(400).json({ error: "Maximum batch size is 20 books" });
+    }
+
+    const results = [];
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      for (let i = 0; i < books.length; i++) {
+        let { title, author, category, description, rating, pages, format, cover, uploader, fileName, fileType, fileSize, fileData } = books[i];
+
+        if (!title || !author || !category || !description || !fileName || !fileData) {
+          throw new Error(`Book ${i + 1} ("${title || "Untitled"}") is missing required fields`);
+        }
+
+        const ratingNum = parseFloat(rating) || 5;
+        const pagesNum = parseInt(pages) || 100;
+        const fileSizeNum = parseInt(fileSize) || 0;
+
+        title = xss(String(title));
+        author = xss(String(author));
+        category = xss(String(category));
+        description = xss(String(description));
+        format = xss(String(format || ""));
+        cover = xss(String(cover || "/Sacred+Rhythms.png"));
+        uploader = xss(String(uploader || "Community User"));
+        fileName = xss(String(fileName));
+        fileType = xss(String(fileType || "application/octet-stream"));
+
+        const result = await client.query(
+          `INSERT INTO books (title, author, category, description, rating, pages, format, cover, uploader, file_name, file_type, file_size, file_data)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+           RETURNING *`,
+          [title, author, category, description, ratingNum, pagesNum, format, cover, uploader, fileName, fileType, fileSizeNum, fileData]
+        );
+        results.push(result.rows[0]);
+      }
+      await client.query("COMMIT");
+      res.status(201).json({ success: true, books: results });
+    } catch (err: any) {
+      await client.query("ROLLBACK");
+      console.error("[Batch Upload Error]", err);
+      res.status(500).json({ error: err.message || "Batch upload failed" });
+    } finally {
+      client.release();
+    }
+  });
+
+  app.get("/api/books/:id/file", async (req, res) => {
+    const db = getPool();
+    if (!db) return res.status(503).json({ error: "Database not configured" });
+
+    try {
+      const result = await db.query(
+        `SELECT id, title, format, file_name, file_type, file_size, file_data, file_data IS NOT NULL AS has_file
+         FROM books
+         WHERE id = $1
+         LIMIT 1`,
+        [req.params.id]
+      );
+
+      if (result.rowCount === 0) {
+        return res.status(404).json({ error: "Book not found" });
+      }
+
+      if (!result.rows[0].file_data) {
+        return res.status(404).json({ error: "No uploaded file found for this book" });
+      }
+
+      return res.status(200).json(result.rows[0]);
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: "Failed to fetch book file" });
     }
   });
 

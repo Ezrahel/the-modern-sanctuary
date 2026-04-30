@@ -2,6 +2,14 @@ import xss from 'xss';
 import { ensureDbInitialized } from './_lib/db';
 import { applyCors, ensureCsrfCookie, handleOptions, verifyCsrf } from './_lib/http';
 
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '15mb',
+    },
+  },
+};
+
 export default async function handler(req: any, res: any) {
   if (handleOptions(req, res)) return;
   applyCors(req, res);
@@ -61,7 +69,7 @@ export default async function handler(req: any, res: any) {
     try {
       const countResult = await db.query(`SELECT COUNT(*) FROM books${whereClause}`, params);
       const total = parseInt(countResult.rows[0].count, 10);
-      const sql = `SELECT * FROM books${whereClause} ORDER BY ${orderBy} LIMIT ${limitNum} OFFSET ${offset}`;
+      const sql = `SELECT id, title, author, category, cover, rating, pages, format, uploader, description, file_name, file_type, file_size, date_added, file_data IS NOT NULL AS has_file FROM books${whereClause} ORDER BY ${orderBy} LIMIT ${limitNum} OFFSET ${offset}`;
       const result = await db.query(sql, params);
 
       return res.status(200).json({
@@ -81,14 +89,15 @@ export default async function handler(req: any, res: any) {
       return res.status(403).json({ error: 'Invalid CSRF token' });
     }
 
-    let { title, author, category, description, rating, pages, format, cover, uploader } = req.body || {};
+    let { title, author, category, description, rating, pages, format, cover, uploader, fileName, fileType, fileSize, fileData } = req.body || {};
 
-    if (!title || !author || !category || !description) {
+    if (!title || !author || !category || !description || !fileName || !fileData) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
     const ratingNum = parseFloat(String(rating));
     const pagesNum = parseInt(String(pages), 10);
+    const fileSizeNum = parseInt(String(fileSize), 10);
 
     if (Number.isNaN(ratingNum) || ratingNum < 1 || ratingNum > 5) {
       return res.status(400).json({ error: 'Rating must be between 1 and 5' });
@@ -98,6 +107,10 @@ export default async function handler(req: any, res: any) {
       return res.status(400).json({ error: 'Pages must be at least 1' });
     }
 
+    if (Number.isNaN(fileSizeNum) || fileSizeNum < 1 || fileSizeNum > 10 * 1024 * 1024) {
+      return res.status(400).json({ error: 'Book file must be 10MB or smaller' });
+    }
+
     title = xss(String(title));
     author = xss(String(author));
     category = xss(String(category));
@@ -105,13 +118,20 @@ export default async function handler(req: any, res: any) {
     format = xss(String(format || ''));
     cover = xss(String(cover || ''));
     uploader = xss(String(uploader || 'Community User'));
+    fileName = xss(String(fileName));
+    fileType = xss(String(fileType || 'application/octet-stream'));
+    fileData = String(fileData);
+
+    if (!fileData.startsWith('data:')) {
+      return res.status(400).json({ error: 'Invalid book file payload' });
+    }
 
     try {
       const result = await db.query(
-        `INSERT INTO books (title, author, category, description, rating, pages, format, cover, uploader)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO books (title, author, category, description, rating, pages, format, cover, uploader, file_name, file_type, file_size, file_data)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          RETURNING *`,
-        [title, author, category, description, ratingNum, pagesNum, format, cover, uploader]
+        [title, author, category, description, ratingNum, pagesNum, format, cover, uploader, fileName, fileType, fileSizeNum, fileData]
       );
 
       return res.status(201).json(result.rows[0]);

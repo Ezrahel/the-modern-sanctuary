@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import { Upload, X, CheckCircle2, Image as ImageIcon, Link as LinkIcon, FileUp, AlertCircle } from 'lucide-react';
 import { CATEGORIES, FORMATS } from '../constants';
@@ -9,6 +9,9 @@ interface UploadFormProps {
   onCancel: () => void;
 }
 
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const BOOK_FILE_ACCEPT = '.pdf,.doc,.docx,.epub,.mobi,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/epub+zip,application/x-mobipocket-ebook';
+
 export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
@@ -16,8 +19,9 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
   const [coverMode, setCoverMode] = useState<'url' | 'file'>('url');
   const [dragActive, setDragActive] = useState(false);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  
+  const coverInputRef = useRef<HTMLInputElement>(null);
+  const bookFileInputRef = useRef<HTMLInputElement>(null);
+
   const [formData, setFormData] = useState({
     title: '',
     author: '',
@@ -27,7 +31,8 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
     pages: 100,
     format: FORMATS[0],
     cover: '',
-    coverFile: null as File | null
+    coverFile: null as File | null,
+    bookFile: null as File | null,
   });
 
   useEffect(() => {
@@ -39,18 +44,20 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
         const data = await res.json();
         setCsrfToken(data.token);
       } catch (err) {
-        console.error("Failed to fetch CSRF token", err);
+        console.error('Failed to fetch CSRF token', err);
       }
     };
     fetchCsrf();
   }, []);
 
   const validate = () => {
-    if (!formData.title.trim()) return "Book title is required";
-    if (!formData.author.trim()) return "Author is required";
-    if (!formData.description.trim()) return "Description is required";
-    if (formData.rating < 1 || formData.rating > 5) return "Rating must be between 1 and 5";
-    if (formData.pages < 1) return "Page count must be at least 1";
+    if (!formData.title.trim()) return 'Book title is required';
+    if (!formData.author.trim()) return 'Author is required';
+    if (!formData.description.trim()) return 'Description is required';
+    if (!formData.bookFile) return 'Please upload the actual book file';
+    if (formData.bookFile.size > MAX_UPLOAD_BYTES) return 'Book files must be 10MB or smaller';
+    if (formData.rating < 1 || formData.rating > 5) return 'Rating must be between 1 and 5';
+    if (formData.pages < 1) return 'Page count must be at least 1';
     return null;
   };
 
@@ -71,12 +78,25 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
         window.location.port === '5173'
           ? 'The app is running on Vite dev server instead of the Express API server. Open the app from http://localhost:3000 and try again.'
           : API_BASE_URL
-            ? `The configured API base URL (${API_BASE_URL}) returned an HTML page instead of API JSON.`
+            ? `The configured API base URL (${API_BASE_URL}) returned an HTML page instead of API JSON. This usually means /api routes are being rewritten to the frontend instead of reaching the server function.`
             : 'The server returned an HTML page instead of API JSON. Please verify the app is running from the Express server.'
       );
     }
 
     return rawText;
+  };
+
+  const readFileAsDataUrl = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+      reader.readAsDataURL(file);
+    });
+
+  const getFormatFromFileName = (fileName: string) => {
+    const extension = fileName.split('.').pop()?.toUpperCase();
+    return FORMATS.includes(extension || '') ? extension || '' : '';
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -90,20 +110,33 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
     }
 
     setIsSubmitting(true);
-    
+
     try {
+      const coverData =
+        coverMode === 'file' && formData.coverFile ? await readFileAsDataUrl(formData.coverFile) : formData.cover;
+      const bookFileData = formData.bookFile ? await readFileAsDataUrl(formData.bookFile) : '';
+
       const response = await fetch(buildApiUrl('/api/books'), {
         method: 'POST',
         credentials: 'include',
         mode: API_BASE_URL ? 'cors' : 'same-origin',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          'x-xsrf-token': csrfToken || ''
+          'x-xsrf-token': csrfToken || '',
         },
         body: JSON.stringify({
-          ...formData,
+          title: formData.title,
+          author: formData.author,
+          category: formData.category,
+          description: formData.description,
           rating: Number(formData.rating),
-          pages: Number(formData.pages)
+          pages: Number(formData.pages),
+          format: formData.format,
+          cover: coverData,
+          fileName: formData.bookFile?.name || '',
+          fileType: formData.bookFile?.type || '',
+          fileSize: formData.bookFile?.size || 0,
+          fileData: bookFileData,
         }),
       });
 
@@ -137,22 +170,41 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
+    setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleCoverFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      setFormData(prev => ({ ...prev, coverFile: file, cover: URL.createObjectURL(file) }));
+      setFormData((prev) => ({ ...prev, coverFile: file, cover: URL.createObjectURL(file) }));
     }
+  };
+
+  const handleBookFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || !e.target.files[0]) return;
+
+    const file = e.target.files[0];
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setError('Book files must be 10MB or smaller.');
+      e.target.value = '';
+      return;
+    }
+
+    const inferredFormat = getFormatFromFileName(file.name);
+    setError(null);
+    setFormData((prev) => ({
+      ...prev,
+      bookFile: file,
+      format: inferredFormat || prev.format,
+    }));
   };
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
+    if (e.type === 'dragenter' || e.type === 'dragover') {
       setDragActive(true);
-    } else if (e.type === "dragleave") {
+    } else if (e.type === 'dragleave') {
       setDragActive(false);
     }
   };
@@ -163,13 +215,13 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
     setDragActive(false);
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       const file = e.dataTransfer.files[0];
-      setFormData(prev => ({ ...prev, coverFile: file, cover: URL.createObjectURL(file) }));
+      setFormData((prev) => ({ ...prev, coverFile: file, cover: URL.createObjectURL(file) }));
     }
   };
 
   if (isSuccess) {
     return (
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
         className="flex flex-col items-center justify-center p-6 md:p-12 text-center bg-white rounded-3xl shadow-xl border border-surface-container-high"
@@ -184,7 +236,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
   }
 
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       className="max-w-4xl mx-auto bg-white rounded-2xl md:rounded-3xl shadow-xl border border-surface-container-high overflow-hidden"
@@ -195,7 +247,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
             <h2 className="text-2xl md:text-3xl font-bold text-charcoal tracking-tight">Upload to the Sanctuary</h2>
             <p className="text-secondary mt-2 text-sm md:text-base">Share a spiritual work with our global community.</p>
           </div>
-          <button 
+          <button
             onClick={onCancel}
             className="p-2 md:p-3 hover:bg-surface-container rounded-full transition-colors text-secondary"
           >
@@ -204,7 +256,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
         </div>
 
         {error && (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             className="mb-6 p-4 bg-red-50 border border-red-100 text-red-600 rounded-xl flex items-center gap-3 text-sm md:text-base"
@@ -218,7 +270,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
           <div className="space-y-4 md:space-y-6">
             <div className="flex flex-col gap-1 md:gap-2">
               <label className="text-[10px] md:text-xs font-black text-secondary/40 uppercase tracking-widest px-1">Book Title</label>
-              <input 
+              <input
                 required
                 name="title"
                 value={formData.title}
@@ -230,7 +282,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
 
             <div className="flex flex-col gap-1 md:gap-2">
               <label className="text-[10px] md:text-xs font-black text-secondary/40 uppercase tracking-widest px-1">Author Name</label>
-              <input 
+              <input
                 required
                 name="author"
                 value={formData.author}
@@ -244,25 +296,25 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
               <div className="flex flex-col gap-1 md:gap-2">
                 <label className="text-[10px] md:text-xs font-black text-secondary/40 uppercase tracking-widest px-1">Category</label>
                 <div className="relative">
-                  <select 
+                  <select
                     name="category"
                     value={formData.category}
                     onChange={handleChange}
                     className="w-full px-4 md:px-5 py-3 md:py-3.5 bg-surface-container-low border border-surface-container-high rounded-xl md:rounded-2xl focus:ring-2 focus:ring-primary focus:bg-white transition-all text-sm outline-none appearance-none cursor-pointer"
                   >
-                    {CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                    {CATEGORIES.map((cat) => <option key={cat} value={cat}>{cat}</option>)}
                   </select>
                 </div>
               </div>
               <div className="flex flex-col gap-1 md:gap-2">
                 <label className="text-[10px] md:text-xs font-black text-secondary/40 uppercase tracking-widest px-1">Format</label>
-                <select 
+                <select
                   name="format"
                   value={formData.format}
                   onChange={handleChange}
                   className="w-full px-4 md:px-5 py-3 md:py-3.5 bg-surface-container-low border border-surface-container-high rounded-xl md:rounded-2xl focus:ring-2 focus:ring-primary focus:bg-white transition-all text-sm outline-none appearance-none cursor-pointer"
                 >
-                  {FORMATS.map(f => <option key={f} value={f}>{f}</option>)}
+                  {FORMATS.map((f) => <option key={f} value={f}>{f}</option>)}
                 </select>
               </div>
             </div>
@@ -270,7 +322,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
             <div className="grid grid-cols-2 gap-3 md:gap-4">
               <div className="flex flex-col gap-1 md:gap-2">
                 <label className="text-[10px] md:text-xs font-black text-secondary/40 uppercase tracking-widest px-1">Page Count</label>
-                <input 
+                <input
                   type="number"
                   name="pages"
                   value={formData.pages}
@@ -280,7 +332,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
               </div>
               <div className="flex flex-col gap-1 md:gap-2">
                 <label className="text-[10px] md:text-xs font-black text-secondary/40 uppercase tracking-widest px-1">Rating (1-5)</label>
-                <input 
+                <input
                   type="number"
                   min="1"
                   max="5"
@@ -299,14 +351,14 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
               <div className="flex items-center justify-between px-1">
                 <label className="text-[10px] md:text-xs font-black text-secondary/40 uppercase tracking-widest">Cover Image</label>
                 <div className="flex bg-surface-container rounded-lg p-0.5">
-                  <button 
+                  <button
                     type="button"
                     onClick={() => setCoverMode('url')}
                     className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all ${coverMode === 'url' ? 'bg-white text-primary shadow-sm' : 'text-secondary hover:text-charcoal'}`}
                   >
                     URL
                   </button>
-                  <button 
+                  <button
                     type="button"
                     onClick={() => setCoverMode('file')}
                     className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all ${coverMode === 'file' ? 'bg-white text-primary shadow-sm' : 'text-secondary hover:text-charcoal'}`}
@@ -319,7 +371,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
               {coverMode === 'url' ? (
                 <div className="relative">
                   <LinkIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-secondary" size={16} />
-                  <input 
+                  <input
                     name="cover"
                     value={formData.cover}
                     onChange={handleChange}
@@ -328,19 +380,19 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
                   />
                 </div>
               ) : (
-                <div 
+                <div
                   className={`relative border-2 border-dashed rounded-xl md:rounded-2xl p-6 md:p-8 flex flex-col items-center justify-center transition-all cursor-pointer ${dragActive ? 'border-primary bg-primary/5' : 'border-surface-container-high bg-surface-container-low hover:border-primary/50'}`}
                   onDragEnter={handleDrag}
                   onDragLeave={handleDrag}
                   onDragOver={handleDrag}
                   onDrop={handleDrop}
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => coverInputRef.current?.click()}
                 >
-                  <input 
-                    type="file" 
-                    ref={fileInputRef}
-                    onChange={handleFileChange}
-                    className="hidden" 
+                  <input
+                    type="file"
+                    ref={coverInputRef}
+                    onChange={handleCoverFileChange}
+                    className="hidden"
                     accept="image/*"
                   />
                   {formData.cover ? (
@@ -350,14 +402,24 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
                       </div>
                       <div className="flex flex-col">
                         <span className="text-xs font-bold text-charcoal">Image selected</span>
-                        <span className="text-[10px] text-primary hover:underline" onClick={(e) => { e.stopPropagation(); setFormData(p => ({ ...p, cover: '', coverFile: null })); }}>Remove</span>
+                        <button
+                          type="button"
+                          className="text-[10px] text-primary hover:underline text-left"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setFormData((prev) => ({ ...prev, cover: '', coverFile: null }));
+                            if (coverInputRef.current) coverInputRef.current.value = '';
+                          }}
+                        >
+                          Remove
+                        </button>
                       </div>
                     </div>
                   ) : (
                     <>
                       <FileUp className="text-secondary mb-2" size={24} />
                       <span className="text-sm font-bold text-charcoal">Click to upload or drag & drop</span>
-                      <span className="text-[10px] text-secondary mt-1 text-center">PNG, JPG or WebP (max 4MB)</span>
+                      <span className="text-[10px] text-secondary mt-1 text-center">PNG, JPG or WebP</span>
                     </>
                   )}
                 </div>
@@ -366,7 +428,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
 
             <div className="flex flex-col gap-1 md:gap-2">
               <label className="text-[10px] md:text-xs font-black text-secondary/40 uppercase tracking-widest px-1">Description / Synopsis</label>
-              <textarea 
+              <textarea
                 required
                 name="description"
                 rows={4}
@@ -377,8 +439,58 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
               />
             </div>
 
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between px-1">
+                <label className="text-[10px] md:text-xs font-black text-secondary/40 uppercase tracking-widest">Book File</label>
+                <span className="text-[10px] text-secondary">Required, max 10MB</span>
+              </div>
+              <div
+                className="relative border-2 border-dashed rounded-xl md:rounded-2xl p-5 md:p-6 flex flex-col items-center justify-center transition-all cursor-pointer border-surface-container-high bg-surface-container-low hover:border-primary/50"
+                onClick={() => bookFileInputRef.current?.click()}
+              >
+                <input
+                  type="file"
+                  ref={bookFileInputRef}
+                  onChange={handleBookFileChange}
+                  className="hidden"
+                  accept={BOOK_FILE_ACCEPT}
+                />
+                {formData.bookFile ? (
+                  <div className="w-full flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-xl bg-white border border-surface-container-high flex items-center justify-center text-primary">
+                      <FileUp size={20} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-bold text-charcoal truncate">{formData.bookFile.name}</p>
+                      <p className="text-[11px] text-secondary">
+                        {(formData.bookFile.size / (1024 * 1024)).toFixed(2)} MB
+                        {getFormatFromFileName(formData.bookFile.name) ? ` • ${getFormatFromFileName(formData.bookFile.name)}` : ''}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="text-[10px] font-bold text-primary hover:underline"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setFormData((prev) => ({ ...prev, bookFile: null }));
+                        if (bookFileInputRef.current) bookFileInputRef.current.value = '';
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <ImageIcon className="text-secondary mb-2" size={24} />
+                    <span className="text-sm font-bold text-charcoal">Choose the actual book file</span>
+                    <span className="text-[10px] text-secondary mt-1 text-center">PDF, DOC, DOCX, EPUB or MOBI</span>
+                  </>
+                )}
+              </div>
+            </div>
+
             <div className="pt-2 md:pt-4">
-              <button 
+              <button
                 type="submit"
                 disabled={isSubmitting}
                 className="w-full bg-primary text-white py-3.5 md:py-4 rounded-xl md:rounded-2xl font-bold hover:shadow-xl shadow-orange-500/20 active:scale-95 transition-all flex items-center justify-center gap-3 disabled:opacity-50"

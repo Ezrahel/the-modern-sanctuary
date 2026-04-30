@@ -119,10 +119,21 @@ export async function ensureDbInitialized() {
           format STRING,
           uploader STRING,
           description STRING,
+          file_name STRING,
+          file_type STRING,
+          file_size INT,
+          file_data STRING,
           date_added TIMESTAMPTZ DEFAULT now(),
           search_vector TSVECTOR AS (to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(author, '') || ' ' || COALESCE(description, ''))) STORED
         );
         CREATE INDEX IF NOT EXISTS books_search_idx ON books USING GIN (search_vector);
+      `);
+      await db.query(`
+        ALTER TABLE books
+        ADD COLUMN IF NOT EXISTS file_name STRING,
+        ADD COLUMN IF NOT EXISTS file_type STRING,
+        ADD COLUMN IF NOT EXISTS file_size INT,
+        ADD COLUMN IF NOT EXISTS file_data STRING;
       `);
       await seedBooks(db);
     })().catch((error) => {

@@ -40,9 +40,11 @@ import {
 } from 'lucide-react';
 import { BookCard } from './components/BookCard';
 import { UploadForm } from './components/UploadForm';
+import { BatchUploadForm } from './components/BatchUploadForm';
 import { ListSkeleton, SearchSkeleton } from './components/Skeleton';
 import { BOOKS, CATEGORIES, FORMATS, Screen, BookType } from './constants';
 import { buildApiUrl } from './api';
+import { posthog } from './posthog';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('home');
@@ -50,6 +52,12 @@ export default function App() {
 
   // Reading Mode State
   const [isReadingMode, setIsReadingMode] = useState(false);
+  const [currentReadingPage, setCurrentReadingPage] = useState(0);
+  const [touchStartX, setTouchStartX] = useState<number | null>(null);
+  const [touchDeltaX, setTouchDeltaX] = useState(0);
+  const [readerFileData, setReaderFileData] = useState<string | null>(null);
+  const [isReaderLoading, setIsReaderLoading] = useState(false);
+  const [readerError, setReaderError] = useState<string | null>(null);
   const [readingSettings, setReadingSettings] = useState({
     fontSize: 18,
     lineHeight: 1.6,
@@ -103,6 +111,7 @@ export default function App() {
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [selectedFormat, setSelectedFormat] = useState<string>('All');
   const [sortBy, setSortBy] = useState<string>('newest'); // newest, oldest, title, author, rating
+  const [uploadMode, setUploadMode] = useState<'single' | 'batch'>('single');
 
   // Backend Data State
   const [books, setBooks] = useState<BookType[]>([]);
@@ -123,8 +132,86 @@ export default function App() {
     format: rawBook?.format ? String(rawBook.format) : undefined,
     uploader: rawBook?.uploader ? String(rawBook.uploader) : undefined,
     description: rawBook?.description ? String(rawBook.description) : undefined,
+    fileName: rawBook?.fileName ? String(rawBook.fileName) : rawBook?.file_name ? String(rawBook.file_name) : undefined,
+    fileType: rawBook?.fileType ? String(rawBook.fileType) : rawBook?.file_type ? String(rawBook.file_type) : undefined,
+    fileSize: rawBook?.fileSize != null ? Number(rawBook.fileSize) : rawBook?.file_size != null ? Number(rawBook.file_size) : undefined,
+    fileData: rawBook?.fileData ? String(rawBook.fileData) : rawBook?.file_data ? String(rawBook.file_data) : undefined,
+    hasFile: rawBook?.hasFile != null ? Boolean(rawBook.hasFile) : rawBook?.has_file != null ? Boolean(rawBook.has_file) : Boolean(rawBook?.fileData ?? rawBook?.file_data),
     dateAdded: String(rawBook?.dateAdded ?? rawBook?.date_added ?? new Date().toISOString()),
   });
+
+  const triggerFileDownload = (book: BookType, fileData: string, fileName?: string) => {
+    const anchor = document.createElement('a');
+    anchor.href = fileData;
+    anchor.download = fileName || `${book.title}.${(book.format || 'pdf').toLowerCase()}`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  };
+
+  const handleDownloadBook = async (book: BookType) => {
+    posthog.capture('book_download_clicked', {
+      book_id: book.id,
+      title: book.title,
+      format: book.format,
+      has_file: Boolean(book.hasFile || book.fileData),
+    });
+
+    if (book.fileData) {
+      triggerFileDownload(book, book.fileData, book.fileName);
+      return;
+    }
+
+    try {
+      const response = await fetch(buildApiUrl(`/api/books/${book.id}/file`), {
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        throw new Error('This book file is not available yet.');
+      }
+
+      const payload = normalizeBook(await response.json());
+      if (!payload.fileData) {
+        throw new Error('The uploaded file could not be loaded.');
+      }
+
+      setBooks((prev) => prev.map((entry) => (entry.id === book.id ? { ...entry, ...payload } : entry)));
+      if (selectedBook?.id === book.id) {
+        setSelectedBook((prev) => (prev ? { ...prev, ...payload } : prev));
+      }
+      triggerFileDownload(book, payload.fileData, payload.fileName);
+    } catch (err) {
+      console.error(err);
+      window.alert(err instanceof Error ? err.message : 'Unable to download this file right now.');
+    }
+  };
+
+  const loadBookFileData = async (book: BookType) => {
+    if (book.fileData) {
+      return book.fileData;
+    }
+
+    const response = await fetch(buildApiUrl(`/api/books/${book.id}/file`), {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      throw new Error('This book file is not available yet.');
+    }
+
+    const payload = normalizeBook(await response.json());
+    if (!payload.fileData) {
+      throw new Error('The uploaded file could not be loaded.');
+    }
+
+    setBooks((prev) => prev.map((entry) => (entry.id === book.id ? { ...entry, ...payload } : entry)));
+    if (selectedBook?.id === book.id) {
+      setSelectedBook((prev) => (prev ? { ...prev, ...payload } : prev));
+    }
+
+    return payload.fileData;
+  };
 
   const fetchBooks = async (page: number = 1) => {
     setIsLoading(true);
@@ -171,6 +258,14 @@ export default function App() {
     }
   }, [currentScreen, searchQuery, selectedCategory, selectedFormat, sortBy]);
 
+  useEffect(() => {
+    posthog.capture('$pageview', {
+      screen: currentScreen,
+      book_id: selectedBook?.id,
+      book_title: selectedBook?.title,
+    });
+  }, [currentScreen, selectedBook]);
+
   const handlePageChange = (newPage: number) => {
     if (newPage >= 1 && newPage <= totalPages) {
       fetchBooks(newPage);
@@ -179,6 +274,13 @@ export default function App() {
   };
 
   const navigateTo = (screen: Screen, book?: BookType) => {
+    posthog.capture('screen_navigate', {
+      from: currentScreen,
+      to: screen,
+      book_id: book?.id,
+      book_title: book?.title,
+    });
+
     if (book) setSelectedBook(book);
     setCurrentScreen(screen);
     window.scrollTo(0, 0);
@@ -186,6 +288,16 @@ export default function App() {
 
   const handleUploadSuccess = (rawBook: unknown) => {
     const uploadedBook = normalizeBook(rawBook);
+
+    posthog.capture('book_uploaded', {
+      book_id: uploadedBook.id,
+      title: uploadedBook.title,
+      author: uploadedBook.author,
+      category: uploadedBook.category,
+      format: uploadedBook.format,
+      has_cover: Boolean(uploadedBook.cover),
+      has_file: Boolean(uploadedBook.hasFile || uploadedBook.fileData),
+    });
 
     setBooks((prev) => [uploadedBook, ...prev.filter((book) => book.id !== uploadedBook.id)]);
     setTotalBooks((prev) => prev + 1);
@@ -196,6 +308,14 @@ export default function App() {
     setSelectedCategory('All');
     setSelectedFormat('All');
     setSortBy('newest');
+    navigateTo('library');
+  };
+
+  const handleBatchUploadSuccess = (books: any[]) => {
+    const normalized = books.map(normalizeBook);
+    setBooks((prev) => [...normalized, ...prev]);
+    setTotalBooks((prev) => prev + normalized.length);
+    setSelectedBook(normalized[0]);
     navigateTo('library');
   };
 
@@ -838,6 +958,46 @@ export default function App() {
 
   const renderDetailScreen = () => {
     const book = selectedBook || books[0] || BOOKS[10];
+    const isPdfBook = Boolean(
+      book.fileType?.toLowerCase().includes('pdf') ||
+      book.format?.toUpperCase().includes('PDF') ||
+      book.fileData?.startsWith('data:application/pdf')
+    );
+    const totalReadingPages = Math.max(book.pages || 1, 1);
+    const activeReadingProgress = totalReadingPages > 0 ? ((currentReadingPage + 1) / totalReadingPages) * 100 : 0;
+    const readerDocumentSrc = readerFileData && isPdfBook
+      ? `${readerFileData}#page=${currentReadingPage + 1}&view=FitH&toolbar=0&navpanes=0&scrollbar=0`
+      : null;
+
+    const goToReadingPage = (pageIndex: number) => {
+      const nextPage = Math.max(0, Math.min(pageIndex, totalReadingPages - 1));
+      setCurrentReadingPage(nextPage);
+      updateProgress(book.id, ((nextPage + 1) / totalReadingPages) * 100);
+    };
+
+    const handleReadingTouchStart = (e: React.TouchEvent) => {
+      setTouchStartX(e.touches[0]?.clientX ?? null);
+      setTouchDeltaX(0);
+    };
+
+    const handleReadingTouchMove = (e: React.TouchEvent) => {
+      if (touchStartX === null) return;
+      setTouchDeltaX((e.touches[0]?.clientX ?? 0) - touchStartX);
+    };
+
+    const handleReadingTouchEnd = () => {
+      if (touchStartX === null) return;
+
+      if (touchDeltaX <= -60 && currentReadingPage < totalReadingPages - 1) {
+        goToReadingPage(currentReadingPage + 1);
+      } else if (touchDeltaX >= 60 && currentReadingPage > 0) {
+        goToReadingPage(currentReadingPage - 1);
+      }
+
+      setTouchStartX(null);
+      setTouchDeltaX(0);
+    };
+
     return (
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="pt-32 pb-24">
         <div className="max-w-7xl mx-auto px-8">
@@ -853,15 +1013,39 @@ export default function App() {
                 </motion.div>
                 <div className="mt-10 flex flex-col gap-5">
                   <button 
-                    onClick={() => setIsReadingMode(true)}
+                    onClick={() => {
+                      setCurrentReadingPage(0);
+                      setTouchStartX(null);
+                      setTouchDeltaX(0);
+                      setReaderFileData(null);
+                      setReaderError(null);
+                      setIsReaderLoading(true);
+                      setIsReadingMode(true);
+                      updateProgress(book.id, totalReadingPages > 0 ? (1 / totalReadingPages) * 100 : 0);
+                      loadBookFileData(book)
+                        .then((fileData) => {
+                          setReaderFileData(fileData);
+                        })
+                        .catch((error) => {
+                          console.error(error);
+                          setReaderError(error instanceof Error ? error.message : 'Unable to load this book for reading mode.');
+                        })
+                        .finally(() => {
+                          setIsReaderLoading(false);
+                        });
+                    }}
                     className="w-full bg-charcoal text-white font-bold py-5 rounded-2xl shadow-xl hover:bg-black transition-all active:scale-95 flex items-center justify-center gap-3 text-lg"
                   >
                     <Maximize2 size={22} />
                     Enter Reading Mode
                   </button>
-                  <button className="w-full bg-primary text-white font-bold py-5 rounded-2xl shadow-xl shadow-orange-500/20 hover:shadow-2xl transition-all active:scale-95 flex items-center justify-center gap-3 text-lg">
+                  <button
+                    onClick={() => handleDownloadBook(book)}
+                    disabled={!book.hasFile && !book.fileData}
+                    className="w-full bg-primary text-white font-bold py-5 rounded-2xl shadow-xl shadow-orange-500/20 hover:shadow-2xl transition-all active:scale-95 flex items-center justify-center gap-3 text-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
                     <Download size={22} strokeWidth={2.5} />
-                    Download Now (Free)
+                    {book.hasFile || book.fileData ? 'Download Now (Free)' : 'Download Unavailable'}
                   </button>
                   <div className="flex items-center justify-center gap-2 text-xs font-black text-secondary/40 uppercase tracking-[0.25em] py-2">
                     <PublicIcon size={16} />
@@ -888,7 +1072,12 @@ export default function App() {
                     <div className="sticky top-0 z-10 w-full border-b backdrop-blur-md bg-white/50 dark:bg-black/50 flex flex-col md:flex-row items-center justify-between px-6 md:px-8 py-4 gap-4 md:gap-0 border-black/5">
                       <div className="flex items-center justify-between w-full md:w-auto gap-4">
                         <button 
-                          onClick={() => setIsReadingMode(false)}
+                          onClick={() => {
+                            setIsReadingMode(false);
+                            setReaderFileData(null);
+                            setReaderError(null);
+                            setIsReaderLoading(false);
+                          }}
                           className="p-3 hover:bg-black/5 rounded-full transition-colors"
                           style={{ color: readingSettings.theme === 'dark' ? 'white' : 'inherit' }}
                         >
@@ -991,12 +1180,12 @@ export default function App() {
                           <div className="w-16 md:w-24 h-1.5 bg-black/10 rounded-full overflow-hidden">
                             <motion.div 
                               initial={{ width: 0 }}
-                              animate={{ width: `${progressData[book.id] || 0}%` }}
+                              animate={{ width: `${Math.max(progressData[book.id] || 0, activeReadingProgress)}%` }}
                               className="h-full bg-primary"
                             />
                           </div>
                           <span className="text-[10px] font-black w-8 text-center" style={{ color: readingSettings.theme === 'dark' ? 'white' : 'inherit' }}>
-                            {Math.round(progressData[book.id] || 0)}%
+                            {Math.round(Math.max(progressData[book.id] || 0, activeReadingProgress))}%
                           </span>
                         </div>
 
@@ -1019,8 +1208,7 @@ export default function App() {
                                   <div key={bm.id} className="group/item relative">
                                     <button 
                                       onClick={() => {
-                                        const el = document.getElementById(`para-${bm.paragraphIndex}`);
-                                        el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                        goToReadingPage(bm.paragraphIndex);
                                       }}
                                       className="w-full text-left p-3 rounded-xl bg-black/5 hover:bg-primary/10 hover:text-primary transition-all text-sm font-medium"
                                       style={{ color: readingSettings.theme === 'dark' ? '#eee' : 'inherit' }}
@@ -1044,53 +1232,97 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="max-w-3xl mx-auto px-8 py-20 min-h-screen font-serif">
+                    <div className="max-w-4xl mx-auto px-4 sm:px-6 md:px-8 py-10 md:py-16 min-h-screen font-serif">
                        <header className="mb-16 text-center">
                           <h1 className="text-4xl md:text-5xl font-bold mb-4" style={{ color: readingSettings.theme === 'dark' ? '#f0f0f0' : '#111111' }}>{book.title}</h1>
                           <p className="text-xl font-medium opacity-60" style={{ color: readingSettings.theme === 'dark' ? '#cccccc' : '#555555' }}>
                             {book.format?.includes('DOC') ? 'Document View' : 'Chapter 1: The Gateway of Silence'}
                           </p>
                        </header>
-                       <div 
-                         style={{ 
-                           fontSize: `${readingSettings.fontSize}px`, 
-                           lineHeight: readingSettings.lineHeight,
-                           color: readingSettings.theme === 'dark' ? '#aaaaaa' : '#333333'
-                         }}
-                         className="space-y-8"
-                       >
-                          {[
-                            "The stillness of the morning was not an absence of sound, but an invitation to listen. In the vast landscape of the digital age, we have traded the resonance of silence for the static of convenience.",
-                            "We find ourselves at a crossroads where the depth of human thought is often sacrificed for the breadth of information. But wisdom, as the ancients knew, is not discovered in the noise. It is gathered in the quiet recesses of the mind, where attention is not a commodity to be sold, but a sacred gift to be bestowed.",
-                            "To read is to enter into a conversation with a voice that has been preserved across time. When we allow that voice to speak without interruption, we begin to see the world not as a series of problems to be solved, but as a mystery to be experienced.",
-                            "This book is an attempt to recover that lost art of contemplation. It is a guide for the modern seeker who wishes to walk the path of digital minimalism without losing the richness of human connection."
-                          ].map((text, idx, arr) => {
-                            const isBookmarked = (bookmarks[book.id] || []).some(b => b.paragraphIndex === idx);
-                            return (
-                              <div key={idx} id={`para-${idx}`} className="relative group">
-                                <p className={idx === 0 ? "first-letter:text-7xl first-letter:font-bold first-letter:mr-3 first-letter:float-left first-letter:text-primary" : ""}>
-                                  {text}
-                                </p>
-                                <div className="absolute -left-12 top-0 bottom-0 flex flex-col items-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                  <button 
-                                    onClick={() => updateProgress(book.id, ((idx + 1) / arr.length) * 100)}
-                                    className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${((progressData[book.id] || 0) >= ((idx + 1) / arr.length) * 100 - 1) ? 'bg-green-500 border-green-500 text-white' : 'border-black/20 hover:border-primary text-transparent'}`}
-                                    title="Mark as read to this point"
-                                  >
-                                    <CheckCircle2 size={12} />
-                                  </button>
-                                  <button 
-                                    onClick={() => isBookmarked ? removeBookmark(book.id, bookmarks[book.id].find(b => b.paragraphIndex === idx)!.id) : addBookmark(book.id, idx)}
-                                    className={`w-6 h-6 rounded-full border-2 mt-2 flex items-center justify-center transition-all ${isBookmarked ? 'bg-primary border-primary text-white' : 'border-black/20 hover:border-primary text-transparent'}`}
-                                    title={isBookmarked ? "Remove bookmark" : "Add bookmark here"}
-                                  >
-                                    <Bookmark size={12} className={isBookmarked ? 'fill-white' : ''} />
-                                  </button>
-                                  <div className="w-[1px] h-full bg-black/5 mt-2" />
-                                </div>
-                              </div>
-                            );
-                          })}
+                       <div className="mx-auto w-full max-w-6xl">
+                         <motion.div
+                           key={currentReadingPage}
+                           initial={{ opacity: 0, x: touchDeltaX < 0 ? 24 : -24 }}
+                           animate={{ opacity: 1, x: touchDeltaX / 6 }}
+                           transition={{ duration: 0.2 }}
+                           onTouchStart={handleReadingTouchStart}
+                           onTouchMove={handleReadingTouchMove}
+                           onTouchEnd={handleReadingTouchEnd}
+                           className="select-none touch-pan-y"
+                         >
+                           <div id={`para-${currentReadingPage}`} className="relative">
+                             {isReaderLoading ? (
+                               <div className="flex min-h-[70vh] items-center justify-center px-6 py-10 text-center">
+                                 <div className="space-y-4">
+                                   <div className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-primary/20 border-t-primary" />
+                                   <p className="text-sm font-medium opacity-70" style={{ color: readingSettings.theme === 'dark' ? '#f0f0f0' : '#444444' }}>
+                                     Loading the document...
+                                   </p>
+                                 </div>
+                               </div>
+                             ) : readerError ? (
+                               <div className="flex min-h-[70vh] items-center justify-center px-6 py-10 text-center text-red-600">
+                                 <div className="space-y-3">
+                                   <p className="text-base font-bold">Reading mode could not open this file.</p>
+                                   <p className="text-sm">{readerError}</p>
+                                 </div>
+                               </div>
+                             ) : isPdfBook && readerDocumentSrc ? (
+                               <iframe
+                                 key={readerDocumentSrc}
+                                 src={readerDocumentSrc}
+                                 title={`${book.title} page ${currentReadingPage + 1}`}
+                                 className="h-[72vh] w-full bg-white sm:h-[78vh] lg:h-[84vh]"
+                               />
+                             ) : (
+                               <div
+                                 style={{
+                                   fontSize: `${readingSettings.fontSize}px`,
+                                   lineHeight: readingSettings.lineHeight,
+                                   color: readingSettings.theme === 'dark' ? '#d4d4d4' : '#333333'
+                                 }}
+                                 className="min-h-[70vh] px-6 py-8"
+                               >
+                                 <p className="text-lg font-semibold">Reading mode currently supports uploaded PDF files.</p>
+                                 <p className="mt-4 text-base opacity-75">
+                                   This item can still be downloaded, but it cannot yet be rendered as paged content in the in-app reader.
+                                 </p>
+                               </div>
+                             )}
+                           </div>
+
+                           <div className="mt-8 flex flex-wrap items-center justify-between gap-3 border-t border-black/5 pt-6">
+                             <button
+                               onClick={() => updateProgress(book.id, activeReadingProgress)}
+                               disabled={Boolean(isReaderLoading || readerError)}
+                               className={`inline-flex items-center gap-2 rounded-2xl border-2 px-4 py-3 text-sm font-bold transition-all ${((progressData[book.id] || 0) >= activeReadingProgress - 1) ? 'border-green-500 bg-green-500 text-white' : 'border-black/15 bg-black/5 hover:border-primary'}`}
+                               style={{ color: ((progressData[book.id] || 0) >= activeReadingProgress - 1) ? 'white' : readingSettings.theme === 'dark' ? 'white' : 'inherit' }}
+                               title="Mark as read to this page"
+                             >
+                               <CheckCircle2 size={16} />
+                               Mark This Page Read
+                             </button>
+
+                             <button
+                               onClick={() => {
+                                 const isBookmarked = (bookmarks[book.id] || []).some(b => b.paragraphIndex === currentReadingPage);
+                                 if (isBookmarked) {
+                                   removeBookmark(book.id, bookmarks[book.id].find(b => b.paragraphIndex === currentReadingPage)!.id);
+                                 } else {
+                                   addBookmark(book.id, currentReadingPage, `Page ${currentReadingPage + 1}`);
+                                 }
+                               }}
+                               disabled={Boolean(isReaderLoading || readerError)}
+                               className={`inline-flex items-center gap-2 rounded-2xl border-2 px-4 py-3 text-sm font-bold transition-all ${((bookmarks[book.id] || []).some(b => b.paragraphIndex === currentReadingPage)) ? 'border-primary bg-primary text-white' : 'border-black/15 bg-black/5 hover:border-primary'}`}
+                               style={{ color: ((bookmarks[book.id] || []).some(b => b.paragraphIndex === currentReadingPage)) ? 'white' : readingSettings.theme === 'dark' ? 'white' : 'inherit' }}
+                               title="Bookmark this page"
+                             >
+                               <Bookmark size={16} className={(bookmarks[book.id] || []).some(b => b.paragraphIndex === currentReadingPage) ? 'fill-white' : ''} />
+                               {(bookmarks[book.id] || []).some(b => b.paragraphIndex === currentReadingPage) ? 'Bookmarked' : 'Bookmark Page'}
+                             </button>
+                           </div>
+                         </motion.div>
+
                        </div>
                     </div>
                   </motion.div>
@@ -1285,13 +1517,28 @@ export default function App() {
   );
 
   const renderUploadScreen = () => (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="pt-32 pb-24">
-      <div className="max-w-7xl mx-auto px-8">
-        <UploadForm 
-          onSuccess={handleUploadSuccess}
-          onCancel={() => navigateTo('home')} 
-        />
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="pt-32 pb-24 max-w-7xl mx-auto px-6">
+      <div className="flex justify-center mb-8">
+        <div className="bg-surface-container p-1 rounded-2xl flex">
+          <button 
+            className={`px-8 py-3 rounded-xl font-bold text-sm transition-all ${uploadMode === 'single' ? 'bg-white text-primary shadow-md' : 'text-secondary hover:text-charcoal'}`}
+            onClick={() => setUploadMode('single')}
+          >
+            Single Upload
+          </button>
+          <button 
+            className={`px-8 py-3 rounded-xl font-bold text-sm transition-all ${uploadMode === 'batch' ? 'bg-white text-primary shadow-md' : 'text-secondary hover:text-charcoal'}`}
+            onClick={() => setUploadMode('batch')}
+          >
+            Batch Upload
+          </button>
+        </div>
       </div>
+      {uploadMode === 'single' ? (
+        <UploadForm onSuccess={handleUploadSuccess} onCancel={() => navigateTo('library')} />
+      ) : (
+        <BatchUploadForm onSuccess={handleBatchUploadSuccess} onCancel={() => navigateTo('library')} />
+      )}
     </motion.div>
   );
 

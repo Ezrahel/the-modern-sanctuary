@@ -13,6 +13,11 @@ export interface BookType {
   format?: string;
   uploader?: string;
   description?: string;
+  fileName?: string;
+  fileType?: string;
+  fileSize?: number;
+  fileData?: string;
+  hasFile?: boolean;
   timeAgo?: string;
   dateAdded: string; // ISO format
 }
@@ -138,3 +143,4 @@ export const BOOKS: BookType[] = [
 
 export const CATEGORIES = ['Theology', 'Christian Living', 'Biblical Studies', 'History', 'Fiction', 'Devotionals', 'Biographies', 'Philosophy', 'Philosophy & Spirituality'];
 export const FORMATS = ['EPUB', 'PDF', 'MOBI', 'DOCS', 'DOCX'];
+export const DEFAULT_COVER_URL = '/Sacred+Rhythms.png';
