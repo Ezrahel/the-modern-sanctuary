@@ -106,40 +106,63 @@ export async function ensureDbInitialized() {
 
   if (!initPromise) {
     initPromise = (async () => {
-      await db.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
-      await db.query(`
-        CREATE TABLE IF NOT EXISTS books (
-          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          title STRING NOT NULL,
-          author STRING NOT NULL,
-          category STRING NOT NULL,
-          cover STRING,
-          rating FLOAT,
-          pages INT,
-          format STRING,
-          uploader STRING,
-          description STRING,
-          file_name STRING,
-          file_type STRING,
-          file_size INT,
-          file_data STRING,
-          date_added TIMESTAMPTZ DEFAULT now(),
-          search_vector TSVECTOR AS (to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(author, '') || ' ' || COALESCE(description, ''))) STORED
-        );
-        CREATE INDEX IF NOT EXISTS books_search_idx ON books USING GIN (search_vector);
-      `);
-      await db.query(`
-        ALTER TABLE books
-        ADD COLUMN IF NOT EXISTS file_name STRING,
-        ADD COLUMN IF NOT EXISTS file_type STRING,
-        ADD COLUMN IF NOT EXISTS file_size INT,
-        ADD COLUMN IF NOT EXISTS file_data STRING;
-      `);
-      await seedBooks(db);
-    })().catch((error) => {
-      initPromise = null;
-      throw error;
-    });
+      try {
+        // Quick check if the table already exists to avoid redundant heavy schema queries
+        const tableCheck = await db.query(`
+          SELECT 1 FROM information_schema.tables 
+          WHERE table_name = 'books' 
+          LIMIT 1;
+        `);
+
+        if (tableCheck.rowCount && tableCheck.rowCount > 0) {
+          // Table exists, check if we need to add columns (resilient to schema updates)
+          await db.query(`
+            ALTER TABLE books
+            ADD COLUMN IF NOT EXISTS file_name STRING,
+            ADD COLUMN IF NOT EXISTS file_type STRING,
+            ADD COLUMN IF NOT EXISTS file_size INT,
+            ADD COLUMN IF NOT EXISTS file_data STRING;
+          `).catch(err => console.warn('Resilient column add failed (might already exist):', err.message));
+          return;
+        }
+
+        console.log('Initializing database schema for the first time...');
+        
+        // Only run these if the table doesn't exist
+        await db.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`).catch(err => {
+          console.warn('Postgres extension pg_trgm could not be created/verified. Search might be slower.', err.message);
+        });
+
+        await db.query(`
+          CREATE TABLE IF NOT EXISTS books (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            title STRING NOT NULL,
+            author STRING NOT NULL,
+            category STRING NOT NULL,
+            cover STRING,
+            rating FLOAT,
+            pages INT,
+            format STRING,
+            uploader STRING,
+            description STRING,
+            file_name STRING,
+            file_type STRING,
+            file_size INT,
+            file_data STRING,
+            date_added TIMESTAMPTZ DEFAULT now(),
+            search_vector TSVECTOR AS (to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(author, '') || ' ' || COALESCE(description, ''))) STORED
+          );
+          CREATE INDEX IF NOT EXISTS books_search_idx ON books USING GIN (search_vector);
+        `);
+
+        await seedBooks(db);
+        console.log('Database schema initialization complete.');
+      } catch (error: any) {
+        console.error('Database initialization error:', error);
+        initPromise = null; // Reset to allow retry on next request
+        throw error;
+      }
+    })();
   }
 
   await initPromise;

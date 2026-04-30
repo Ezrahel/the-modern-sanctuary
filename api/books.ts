@@ -135,9 +135,20 @@ export default async function handler(req: any, res: any) {
       );
 
       return res.status(201).json(result.rows[0]);
-    } catch (error) {
-      console.error('Failed to upload book:', error);
-      return res.status(500).json({ error: 'Failed to upload book' });
+    } catch (error: any) {
+      console.error('Failed to upload book:', {
+        message: error.message,
+        stack: error.stack,
+        title: title?.substring(0, 50),
+        author: author?.substring(0, 50),
+        fileSize: fileSizeNum,
+        fileType: fileType,
+        fileDataLength: fileData?.length,
+      });
+      return res.status(500).json({ 
+        error: 'Failed to upload book',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined 
+      });
     }
   }
 
