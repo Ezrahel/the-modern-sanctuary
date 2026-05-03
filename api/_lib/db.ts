@@ -1,10 +1,19 @@
 import pg from 'pg';
 
 const { Pool } = pg;
+const MAX_UPLOAD_BYTES = 3 * 1024 * 1024;
 
 let pool: pg.Pool | null = null;
 let dbConfigErrorLogged = false;
 let initPromise: Promise<void> | null = null;
+
+export type DbDiagnostic = {
+  configured: boolean;
+  validUrl: boolean;
+  initialized: boolean;
+  stage: 'env' | 'connect' | 'init' | 'ready';
+  message: string;
+};
 
 function isValidPostgresUrl(connectionString: string) {
   try {
@@ -54,6 +63,71 @@ export function getPool() {
   return pool;
 }
 
+export async function getDbDiagnostic(): Promise<DbDiagnostic> {
+  const connectionString = process.env.COCKROACH_DB_URL;
+  if (!connectionString) {
+    return {
+      configured: false,
+      validUrl: false,
+      initialized: false,
+      stage: 'env',
+      message: 'COCKROACH_DB_URL is not defined.',
+    };
+  }
+
+  if (!isValidPostgresUrl(connectionString)) {
+    return {
+      configured: true,
+      validUrl: false,
+      initialized: false,
+      stage: 'env',
+      message: 'COCKROACH_DB_URL is not a valid postgres connection string.',
+    };
+  }
+
+  const db = getPool();
+  if (!db) {
+    return {
+      configured: true,
+      validUrl: true,
+      initialized: false,
+      stage: 'connect',
+      message: 'The database pool could not be created.',
+    };
+  }
+
+  try {
+    await db.query('SELECT 1');
+  } catch (error: any) {
+    return {
+      configured: true,
+      validUrl: true,
+      initialized: false,
+      stage: 'connect',
+      message: error?.message || 'The database connection test failed.',
+    };
+  }
+
+  try {
+    await ensureDbInitialized();
+    return {
+      configured: true,
+      validUrl: true,
+      initialized: true,
+      stage: 'ready',
+      message: 'Connected to CockroachDB and schema is ready.',
+    };
+  } catch (error: any) {
+    return {
+      configured: true,
+      validUrl: true,
+      initialized: false,
+      stage: 'init',
+      message: error?.message || 'Database initialization failed.',
+    };
+  }
+}
+
 async function seedBooks(db: pg.Pool) {
   const countRes = await db.query('SELECT COUNT(*) FROM books');
   if (parseInt(countRes.rows[0].count, 10) > 0) return;
@@ -100,6 +174,36 @@ async function seedBooks(db: pg.Pool) {
   }
 }
 
+async function reconcileExistingBooksSchema(db: pg.Pool) {
+  await db.query(`
+    ALTER TABLE books
+    ADD COLUMN IF NOT EXISTS file_name STRING,
+    ADD COLUMN IF NOT EXISTS file_type STRING,
+    ADD COLUMN IF NOT EXISTS file_size INT,
+    ADD COLUMN IF NOT EXISTS file_data STRING,
+    ADD COLUMN IF NOT EXISTS date_added TIMESTAMPTZ DEFAULT now();
+  `);
+
+  await db.query(`
+    ALTER TABLE books
+    ADD COLUMN IF NOT EXISTS search_vector TSVECTOR
+    AS (
+      to_tsvector(
+        'english',
+        COALESCE(title, '') || ' ' || COALESCE(author, '') || ' ' || COALESCE(description, '')
+      )
+    ) STORED;
+  `).catch((err) => {
+    console.warn('Optional search_vector column could not be created/verified.', err.message);
+  });
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS books_search_idx ON books USING GIN (search_vector);
+  `).catch((err) => {
+    console.warn('Optional books_search_idx index could not be created/verified.', err.message);
+  });
+}
+
 export async function ensureDbInitialized() {
   const db = getPool();
   if (!db) return null;
@@ -110,16 +214,8 @@ export async function ensureDbInitialized() {
         // Direct check: try a simple query on the books table
         try {
           await db.query('SELECT 1 FROM books LIMIT 1');
-          
-          // Table exists! Do a quick resilient check for missing columns if needed
-          await db.query(`
-            ALTER TABLE books
-            ADD COLUMN IF NOT EXISTS file_name STRING,
-            ADD COLUMN IF NOT EXISTS file_type STRING,
-            ADD COLUMN IF NOT EXISTS file_size INT,
-            ADD COLUMN IF NOT EXISTS file_data STRING;
-          `).catch(err => console.debug('Optional column check failed (likely already exists):', err.message));
-          
+
+          await reconcileExistingBooksSchema(db);
           return;
         } catch (err) {
           // Table probably doesn't exist, proceed to full initialization
@@ -172,3 +268,5 @@ export async function ensureDbInitialized() {
   await initPromise;
   return db;
 }
+
+export { MAX_UPLOAD_BYTES };

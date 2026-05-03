@@ -9,7 +9,7 @@ interface UploadFormProps {
   onCancel: () => void;
 }
 
-const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 3 * 1024 * 1024;
 const BOOK_FILE_ACCEPT = '.pdf,.doc,.docx,.epub,.mobi,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/epub+zip,application/x-mobipocket-ebook';
 
 export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) => {
@@ -55,7 +55,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
     if (!formData.author.trim()) return 'Author is required';
     if (!formData.description.trim()) return 'Description is required';
     if (!formData.bookFile) return 'Please upload the actual book file';
-    if (formData.bookFile.size > MAX_UPLOAD_BYTES) return 'Book files must be 10MB or smaller';
+    if (formData.bookFile.size > MAX_UPLOAD_BYTES) return 'Book files must be 3MB or smaller on the current production upload path';
     if (formData.rating < 1 || formData.rating > 5) return 'Rating must be between 1 and 5';
     if (formData.pages < 1) return 'Page count must be at least 1';
     return null;
@@ -185,7 +185,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
 
     const file = e.target.files[0];
     if (file.size > MAX_UPLOAD_BYTES) {
-      setError('Book files must be 10MB or smaller.');
+      setError('Book files must be 3MB or smaller on the current production upload path.');
       e.target.value = '';
       return;
     }
@@ -442,7 +442,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between px-1">
                 <label className="text-[10px] md:text-xs font-black text-secondary/40 uppercase tracking-widest">Book File</label>
-                <span className="text-[10px] text-secondary">Required, max 10MB</span>
+                <span className="text-[10px] text-secondary">Required, max 3MB</span>
               </div>
               <div
                 className="relative border-2 border-dashed rounded-xl md:rounded-2xl p-5 md:p-6 flex flex-col items-center justify-center transition-all cursor-pointer border-surface-container-high bg-surface-container-low hover:border-primary/50"

@@ -1,11 +1,11 @@
 import xss from 'xss';
-import { ensureDbInitialized } from './_lib/db';
+import { ensureDbInitialized, MAX_UPLOAD_BYTES } from './_lib/db';
 import { applyCors, ensureCsrfCookie, handleOptions, verifyCsrf } from './_lib/http';
 
 export const config = {
   api: {
     bodyParser: {
-      sizeLimit: '15mb',
+      sizeLimit: '4.5mb',
     },
   },
 };
@@ -22,7 +22,7 @@ export default async function handler(req: any, res: any) {
     });
 
     if (!db) {
-      return res.status(503).json({ error: 'Database not configured' });
+      return res.status(503).json({ error: 'Database is unavailable or failed to initialize' });
     }
 
     if (req.method === 'GET') {
@@ -30,24 +30,44 @@ export default async function handler(req: any, res: any) {
       const pageNum = parseInt(String(page), 10) || 1;
       const limitNum = parseInt(String(limit), 10) || 50;
       const offset = (pageNum - 1) * limitNum;
+      const normalizedQuery = String(query || '').trim();
 
       let whereClause = ' WHERE 1=1';
       const params: string[] = [];
 
       let orderBy = 'date_added DESC';
-      if (query) {
-        params.push(String(query));
-        const qIdx = params.length;
-        whereClause += ` AND (
-          search_vector @@ websearch_to_tsquery('english', $${qIdx})
-          OR title ILIKE '%' || $${qIdx} || '%'
-          OR author ILIKE '%' || $${qIdx} || '%'
-          OR similarity(title, $${qIdx}) > 0.2
-          OR similarity(author, $${qIdx}) > 0.2
-        )`;
+      const supportsAdvancedSearch = await db
+        .query(`
+          SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'books'
+              AND column_name = 'search_vector'
+          ) AS has_search_vector
+        `)
+        .then((result) => Boolean(result.rows[0]?.has_search_vector))
+        .catch(() => false);
 
-        if (!sortBy || sortBy === 'newest') {
-          orderBy = `ts_rank(search_vector, websearch_to_tsquery('english', $${qIdx})) DESC, similarity(title, $${qIdx}) DESC`;
+      if (normalizedQuery) {
+        params.push(normalizedQuery);
+        const qIdx = params.length;
+
+        if (supportsAdvancedSearch) {
+          whereClause += ` AND (
+            search_vector @@ websearch_to_tsquery('english', $${qIdx})
+            OR title ILIKE '%' || $${qIdx} || '%'
+            OR author ILIKE '%' || $${qIdx} || '%'
+          )`;
+
+          if (!sortBy || sortBy === 'newest') {
+            orderBy = `ts_rank(search_vector, websearch_to_tsquery('english', $${qIdx})) DESC, date_added DESC`;
+          }
+        } else {
+          whereClause += ` AND (
+            title ILIKE '%' || $${qIdx} || '%'
+            OR author ILIKE '%' || $${qIdx} || '%'
+            OR description ILIKE '%' || $${qIdx} || '%'
+          )`;
         }
       }
 
@@ -111,8 +131,8 @@ export default async function handler(req: any, res: any) {
         return res.status(400).json({ error: 'Pages must be at least 1' });
       }
 
-      if (Number.isNaN(fileSizeNum) || fileSizeNum < 1 || fileSizeNum > 10 * 1024 * 1024) {
-        return res.status(400).json({ error: 'Book file must be 10MB or smaller' });
+      if (Number.isNaN(fileSizeNum) || fileSizeNum < 1 || fileSizeNum > MAX_UPLOAD_BYTES) {
+        return res.status(400).json({ error: 'Book file must be 3MB or smaller for the current Vercel upload path' });
       }
 
       title = xss(String(title));

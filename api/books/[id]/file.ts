@@ -16,7 +16,7 @@ export default async function handler(req: any, res: any) {
   });
 
   if (!db) {
-    return res.status(503).json({ error: 'Database not configured' });
+    return res.status(503).json({ error: 'Database is unavailable or failed to initialize' });
   }
 
   try {

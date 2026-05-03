@@ -29,7 +29,7 @@ interface BatchFile {
   error?: string;
 }
 
-const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 3 * 1024 * 1024;
 const MAX_BATCH_FILES = 20;
 const BOOK_FILE_ACCEPT = '.pdf,.doc,.docx,.epub,.mobi,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/epub+zip,application/x-mobipocket-ebook';
 
@@ -118,7 +118,7 @@ export const BatchUploadForm: React.FC<BatchUploadFormProps> = ({ onSuccess, onC
     if (newFiles.length > remainingSlots) {
       setError(`Only the first ${remainingSlots} files were added. Batch upload supports up to ${MAX_BATCH_FILES} files at a time.`);
     } else if (validFiles.length < newFiles.length) {
-      setError('Some files were skipped because they exceed the 10MB limit.');
+      setError('Some files were skipped because they exceed the 3MB production upload limit.');
     } else {
       setError(null);
     }
@@ -372,7 +372,7 @@ export const BatchUploadForm: React.FC<BatchUploadFormProps> = ({ onSuccess, onC
                   <FileUp size={32} />
                 </div>
                 <h4 className="text-lg font-bold text-charcoal">Drop your books here</h4>
-                <p className="text-sm text-secondary mt-1">Select multiple PDF, EPUB, or MOBI files (max 10MB each)</p>
+                <p className="text-sm text-secondary mt-1">Select multiple PDF, EPUB, or MOBI files (max 3MB each)</p>
               </div>
             ) : (
               <div className="space-y-4">
