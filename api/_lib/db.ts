@@ -50,6 +50,7 @@ export function getPool() {
         ssl: {
           rejectUnauthorized: false,
         },
+        connectionTimeoutMillis: 5000, // 5 seconds connection timeout
       });
     } catch (error) {
       if (!dbConfigErrorLogged) {
