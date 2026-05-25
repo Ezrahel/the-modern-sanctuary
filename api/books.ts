@@ -1,8 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import xss from 'xss';
 import { ensureDbInitialized, MAX_UPLOAD_BYTES } from './_lib/db';
+import { MAX_PAGE_SIZE } from './_lib/limits';
 import { applyCors, ensureCsrfCookie, handleOptions, verifyCsrf } from './_lib/http';
 import { MODERATION_STATUS, PUBLIC_BOOKS_FILTER } from './_lib/moderation';
+import { clampTextFields, validateBookUploadInput } from './_lib/validate-upload';
 
 export const config = {
   maxDuration: 30,
@@ -31,7 +33,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (req.method === 'GET') {
       const { query, category, format, sortBy, page = '1', limit = '50' } = req.query;
       const pageNum = parseInt(String(page), 10) || 1;
-      const limitNum = parseInt(String(limit), 10) || 50;
+      const limitNum = Math.min(Math.max(parseInt(String(limit), 10) || 50, 1), MAX_PAGE_SIZE);
       const offset = (pageNum - 1) * limitNum;
       const normalizedQuery = String(query || '').trim();
 
@@ -134,24 +136,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(400).json({ error: 'Pages must be at least 1' });
       }
 
-      if (Number.isNaN(fileSizeNum) || fileSizeNum < 1 || fileSizeNum > MAX_UPLOAD_BYTES) {
-        return res.status(400).json({ error: 'Book file must be 3MB or smaller for the current Vercel upload path' });
-      }
-
-      title = xss(String(title));
-      author = xss(String(author));
-      category = xss(String(category));
-      description = xss(String(description));
-      format = xss(String(format || ''));
-      cover = xss(String(cover || ''));
-      uploader = xss(String(uploader || 'Community User'));
       fileName = xss(String(fileName));
       fileType = xss(String(fileType || 'application/octet-stream'));
       fileData = String(fileData);
+      cover = xss(String(cover || ''));
 
-      if (!fileData.startsWith('data:')) {
-        return res.status(400).json({ error: 'Invalid book file payload' });
+      const uploadValidationError = validateBookUploadInput({
+        fileName,
+        fileType,
+        fileSize: fileSizeNum,
+        fileData,
+        cover,
+      });
+      if (uploadValidationError) {
+        return res.status(400).json({ error: uploadValidationError });
       }
+
+      const clamped = clampTextFields({
+        title: xss(String(title)),
+        author: xss(String(author)),
+        category: xss(String(category)),
+        description: xss(String(description)),
+        uploader: xss(String(uploader || 'Community User')),
+      });
+      title = clamped.title;
+      author = clamped.author;
+      category = clamped.category;
+      description = clamped.description;
+      uploader = clamped.uploader;
+      format = xss(String(format || ''));
 
       try {
         const result = await db.query(
@@ -190,9 +203,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       method: req.method,
       url: req.url,
     });
-    return res.status(500).json({ 
-      error: 'Internal server error', 
-      details: globalError.message 
+    return res.status(500).json({
+      error: 'Internal server error',
+      details: process.env.NODE_ENV === 'development' ? globalError.message : undefined,
     });
   }
 }

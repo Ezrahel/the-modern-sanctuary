@@ -24,6 +24,7 @@ import {
   type AdminBook,
   type ModerationStatus,
 } from '../adminApi';
+import { buildApiUrl } from '../api';
 
 type StatusFilter = 'pending' | 'approved' | 'rejected' | 'all';
 
@@ -137,6 +138,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onExit }) => {
       await loadBooks();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Reject failed');
+    }
+  };
+
+  const openBookFile = async (book: AdminBook) => {
+    if (!book.has_file) {
+      setActionError('No file attached to this submission.');
+      return;
+    }
+    try {
+      const res = await fetch(buildApiUrl(`/api/admin/books/${book.id}/file`), { credentials: 'include' });
+      const data = await res.json();
+      if (!res.ok || !data.file_data) {
+        throw new Error(data.error || 'Could not load file');
+      }
+      window.open(data.file_data, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not preview file');
     }
   };
 
@@ -352,6 +370,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onExit }) => {
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2 shrink-0">
+                    {book.has_file && (
+                      <button
+                        type="button"
+                        onClick={() => openBookFile(book)}
+                        className="inline-flex items-center gap-1 px-3 py-2 rounded-full border border-surface-container-high text-sm font-semibold"
+                      >
+                        Preview file
+                      </button>
+                    )}
                     {book.moderation_status !== 'approved' && (
                       <button
                         type="button"

@@ -3,14 +3,19 @@ import { motion } from 'motion/react';
 import { Upload, X, CheckCircle2, Image as ImageIcon, Link as LinkIcon, FileUp, AlertCircle } from 'lucide-react';
 import { CATEGORIES, FORMATS } from '../constants';
 import { API_BASE_URL, buildApiUrl } from '../api';
+import {
+  ALLOWED_BOOK_ACCEPT,
+  MAX_BOOK_FILE_BYTES,
+  MAX_COVER_BYTES,
+  formatMegabytes,
+} from '../lib/uploadLimits';
+import { fetchCsrfToken, getExtension, isAllowedBookExtension, parseApiResponse } from '../lib/apiClient';
+import { UploadGuidelines } from './UploadGuidelines';
 
 interface UploadFormProps {
   onSuccess: (book: unknown) => void;
   onCancel: () => void;
 }
-
-const MAX_UPLOAD_BYTES = 3 * 1024 * 1024;
-const BOOK_FILE_ACCEPT = '.pdf,.doc,.docx,.epub,.mobi,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/epub+zip,application/x-mobipocket-ebook';
 
 export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -36,18 +41,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
   });
 
   useEffect(() => {
-    const fetchCsrf = async () => {
-      try {
-        const res = await fetch(buildApiUrl('/api/csrf-token'), {
-          credentials: 'include',
-        });
-        const data = await res.json();
-        setCsrfToken(data.token);
-      } catch (err) {
-        console.error('Failed to fetch CSRF token', err);
-      }
-    };
-    fetchCsrf();
+    fetchCsrfToken().then(setCsrfToken).catch(() => setCsrfToken(null));
   }, []);
 
   const validate = () => {
@@ -55,35 +49,18 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
     if (!formData.author.trim()) return 'Author is required';
     if (!formData.description.trim()) return 'Description is required';
     if (!formData.bookFile) return 'Please upload the actual book file';
-    if (formData.bookFile.size > MAX_UPLOAD_BYTES) return 'Book files must be 3MB or smaller on the current production upload path';
+    if (!isAllowedBookExtension(formData.bookFile.name)) {
+      return 'Only PDF, EPUB, MOBI, DOC, and DOCX files are allowed.';
+    }
+    if (formData.bookFile.size > MAX_BOOK_FILE_BYTES) {
+      return `Book files must be ${formatMegabytes(MAX_BOOK_FILE_BYTES)} or smaller.`;
+    }
+    if (coverMode === 'file' && formData.coverFile && formData.coverFile.size > MAX_COVER_BYTES) {
+      return `Cover images must be ${MAX_COVER_BYTES / 1024}KB or smaller.`;
+    }
     if (formData.rating < 1 || formData.rating > 5) return 'Rating must be between 1 and 5';
     if (formData.pages < 1) return 'Page count must be at least 1';
     return null;
-  };
-
-  const parseResponseBody = async (response: Response) => {
-    const contentType = response.headers.get('content-type') || '';
-    const rawText = await response.text();
-
-    if (contentType.includes('application/json')) {
-      try {
-        return rawText ? JSON.parse(rawText) : null;
-      } catch {
-        throw new Error('The server returned invalid JSON.');
-      }
-    }
-
-    if (rawText.trim().startsWith('<!doctype') || rawText.trim().startsWith('<html')) {
-      throw new Error(
-        window.location.port === '5173'
-          ? 'The app is running on Vite dev server instead of the Express API server. Open the app from http://localhost:3000 and try again.'
-          : API_BASE_URL
-            ? `The configured API base URL (${API_BASE_URL}) returned an HTML page instead of API JSON. This usually means /api routes are being rewritten to the frontend instead of reaching the server function.`
-            : 'The server returned an HTML page instead of API JSON. Please verify the app is running from the Express server.'
-      );
-    }
-
-    return rawText;
   };
 
   const readFileAsDataUrl = (file: File) =>
@@ -95,8 +72,8 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
     });
 
   const getFormatFromFileName = (fileName: string) => {
-    const extension = fileName.split('.').pop()?.toUpperCase();
-    return FORMATS.includes(extension || '') ? extension || '' : '';
+    const extension = getExtension(fileName).toUpperCase();
+    return FORMATS.includes(extension) ? extension : extension || 'PDF';
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -112,6 +89,15 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
     setIsSubmitting(true);
 
     try {
+      let token = csrfToken;
+      if (!token) {
+        token = await fetchCsrfToken();
+        setCsrfToken(token);
+      }
+      if (!token) {
+        throw new Error('Could not start a secure session. Refresh the page and try again.');
+      }
+
       const coverData =
         coverMode === 'file' && formData.coverFile ? await readFileAsDataUrl(formData.coverFile) : formData.cover;
       const bookFileData = formData.bookFile ? await readFileAsDataUrl(formData.bookFile) : '';
@@ -122,7 +108,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
         mode: API_BASE_URL ? 'cors' : 'same-origin',
         headers: {
           'Content-Type': 'application/json',
-          'x-xsrf-token': csrfToken || '',
+          'x-xsrf-token': token,
         },
         body: JSON.stringify({
           title: formData.title,
@@ -140,7 +126,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
         }),
       });
 
-      const responseBody = await parseResponseBody(response);
+      const responseBody = await parseApiResponse(response);
 
       if (!response.ok) {
         if (responseBody && typeof responseBody === 'object' && 'error' in responseBody) {
@@ -184,8 +170,13 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
     if (!e.target.files || !e.target.files[0]) return;
 
     const file = e.target.files[0];
-    if (file.size > MAX_UPLOAD_BYTES) {
-      setError('Book files must be 3MB or smaller on the current production upload path.');
+    if (!isAllowedBookExtension(file.name)) {
+      setError('Only PDF, EPUB, MOBI, DOC, and DOCX files are allowed.');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > MAX_BOOK_FILE_BYTES) {
+      setError(`Book files must be ${formatMegabytes(MAX_BOOK_FILE_BYTES)} or smaller.`);
       e.target.value = '';
       return;
     }
@@ -229,8 +220,10 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
         <div className="w-16 h-16 md:w-20 md:h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mb-6">
           <CheckCircle2 size={32} className="md:w-10 md:h-10" />
         </div>
-        <h2 className="text-2xl md:text-3xl font-bold text-charcoal mb-4">Upload Successful!</h2>
-        <p className="text-secondary max-w-sm text-sm md:text-base">Your contribution has been added to the sanctuary. Thank you for sharing your wisdom.</p>
+        <h2 className="text-2xl md:text-3xl font-bold text-charcoal mb-4">Submission received</h2>
+        <p className="text-secondary max-w-sm text-sm md:text-base">
+          Thank you! Your book is pending review. It will appear in the library once an admin approves it.
+        </p>
       </motion.div>
     );
   }
@@ -254,6 +247,8 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
             <X size={20} className="md:w-6 md:h-6" />
           </button>
         </div>
+
+        <UploadGuidelines />
 
         {error && (
           <motion.div
@@ -442,7 +437,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between px-1">
                 <label className="text-[10px] md:text-xs font-black text-secondary/40 uppercase tracking-widest">Book File</label>
-                <span className="text-[10px] text-secondary">Required, max 3MB</span>
+                <span className="text-[10px] text-secondary">Required, max {formatMegabytes(MAX_BOOK_FILE_BYTES)}</span>
               </div>
               <div
                 className="relative border-2 border-dashed rounded-xl md:rounded-2xl p-5 md:p-6 flex flex-col items-center justify-center transition-all cursor-pointer border-surface-container-high bg-surface-container-low hover:border-primary/50"
@@ -453,7 +448,7 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
                   ref={bookFileInputRef}
                   onChange={handleBookFileChange}
                   className="hidden"
-                  accept={BOOK_FILE_ACCEPT}
+                  accept={ALLOWED_BOOK_ACCEPT}
                 />
                 {formData.bookFile ? (
                   <div className="w-full flex items-center gap-3">

@@ -305,8 +305,8 @@ async function startServer() {
       return res.status(400).json({ error: "Pages must be at least 1" });
     }
 
-    if (isNaN(fileSizeNum) || fileSizeNum < 1 || fileSizeNum > 10 * 1024 * 1024) {
-      return res.status(400).json({ error: "Book file must be 10MB or smaller" });
+    if (isNaN(fileSizeNum) || fileSizeNum < 1 || fileSizeNum > 3 * 1024 * 1024) {
+      return res.status(400).json({ error: "Book file must be 3MB or smaller" });
     }
 
     // XSS Sanitization
@@ -381,8 +381,8 @@ async function startServer() {
         fileType = xss(String(fileType || "application/octet-stream"));
 
         const result = await client.query(
-          `INSERT INTO books (title, author, category, description, rating, pages, format, cover, uploader, file_name, file_type, file_size, file_data)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          `INSERT INTO books (title, author, category, description, rating, pages, format, cover, uploader, file_name, file_type, file_size, file_data, moderation_status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending')
            RETURNING *`,
           [title, author, category, description, ratingNum, pagesNum, format, cover, uploader, fileName, fileType, fileSizeNum, fileData]
         );
@@ -407,7 +407,7 @@ async function startServer() {
       const result = await db.query(
         `SELECT id, title, format, file_name, file_type, file_size, file_data, file_data IS NOT NULL AS has_file
          FROM books
-         WHERE id = $1
+         WHERE id = $1 AND (moderation_status IS NULL OR moderation_status = 'approved')
          LIMIT 1`,
         [req.params.id]
       );

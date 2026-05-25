@@ -1,7 +1,9 @@
 import type { Pool as PgPool } from 'pg';
 import { getCockroachDbUrl } from './env';
 
-const MAX_UPLOAD_BYTES = 3 * 1024 * 1024;
+import { MAX_BOOK_FILE_BYTES } from './limits';
+
+const MAX_UPLOAD_BYTES = MAX_BOOK_FILE_BYTES;
 
 let pool: PgPool | null = null;
 let dbConfigErrorLogged = false;

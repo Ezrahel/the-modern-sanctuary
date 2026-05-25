@@ -117,6 +117,7 @@ export default function App() {
   // Backend Data State
   const [books, setBooks] = useState<BookType[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [libraryFetchError, setLibraryFetchError] = useState<string | null>(null);
 
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -216,6 +217,7 @@ export default function App() {
 
   const fetchBooks = async (page: number = 1) => {
     setIsLoading(true);
+    setLibraryFetchError(null);
     try {
       const params = new URLSearchParams({
         query: searchQuery,
@@ -232,7 +234,8 @@ export default function App() {
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: 'Unknown server error' }));
         console.warn('API Error:', errorData);
-        setBooks([]); // Fallback to empty
+        setLibraryFetchError(errorData.error || 'Could not load books from the server.');
+        setBooks([]);
         return;
       }
 
@@ -247,6 +250,8 @@ export default function App() {
       }
     } catch (err) {
       console.error(err);
+      setLibraryFetchError(err instanceof Error ? err.message : 'Could not load books. Check your connection.');
+      setBooks([]);
     } finally {
       setIsLoading(false);
     }
@@ -617,6 +622,11 @@ export default function App() {
             >
               The <span className="text-primary italic">Library</span>.
             </motion.h1>
+            {libraryFetchError && (
+              <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-100 text-red-700 text-sm">
+                {libraryFetchError}
+              </div>
+            )}
             <motion.p 
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -987,6 +997,8 @@ export default function App() {
       book.format?.toUpperCase().includes('PDF') ||
       book.fileData?.startsWith('data:application/pdf')
     );
+    const canReadInBrowser = isPdfBook && (book.hasFile || book.fileData);
+    const canDownload = book.hasFile || book.fileData;
     const totalReadingPages = Math.max(book.pages || 1, 1);
     const activeReadingProgress = totalReadingPages > 0 ? ((currentReadingPage + 1) / totalReadingPages) * 100 : 0;
     const readerDocumentSrc = readerFileData && isPdfBook
@@ -1038,6 +1050,7 @@ export default function App() {
                 <div className="mt-10 flex flex-col gap-5">
                   <button 
                     onClick={() => {
+                      if (!canReadInBrowser) return;
                       setCurrentReadingPage(0);
                       setTouchStartX(null);
                       setTouchDeltaX(0);
@@ -1058,18 +1071,19 @@ export default function App() {
                           setIsReaderLoading(false);
                         });
                     }}
-                    className="w-full bg-charcoal text-white font-bold py-5 rounded-2xl shadow-xl hover:bg-black transition-all active:scale-95 flex items-center justify-center gap-3 text-lg"
+                    disabled={!canReadInBrowser}
+                    className="w-full bg-charcoal text-white font-bold py-5 rounded-2xl shadow-xl hover:bg-black transition-all active:scale-95 flex items-center justify-center gap-3 text-lg disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Maximize2 size={22} />
-                    Enter Reading Mode
+                    {canReadInBrowser ? 'Enter Reading Mode' : 'Reading mode (PDF only)'}
                   </button>
                   <button
                     onClick={() => handleDownloadBook(book)}
-                    disabled={!book.hasFile && !book.fileData}
+                    disabled={!canDownload}
                     className="w-full bg-primary text-white font-bold py-5 rounded-2xl shadow-xl shadow-orange-500/20 hover:shadow-2xl transition-all active:scale-95 flex items-center justify-center gap-3 text-lg disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Download size={22} strokeWidth={2.5} />
-                    {book.hasFile || book.fileData ? 'Download Now (Free)' : 'Download Unavailable'}
+                    {canDownload ? 'Download Now (Free)' : 'Download Unavailable'}
                   </button>
                   <div className="flex items-center justify-center gap-2 text-xs font-black text-secondary/40 uppercase tracking-[0.25em] py-2">
                     <PublicIcon size={16} />
