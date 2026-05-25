@@ -1,8 +1,5 @@
-import { createRequire } from 'node:module';
 import type { Pool as PgPool } from 'pg';
 import { getCockroachDbUrl } from './env';
-
-const require = createRequire(__filename);
 
 const MAX_UPLOAD_BYTES = 3 * 1024 * 1024;
 
@@ -13,7 +10,10 @@ let PoolConstructor: typeof PgPool | null = null;
 
 function getPgPoolClass(): typeof PgPool {
   if (!PoolConstructor) {
-    PoolConstructor = require('pg').Pool;
+    // Use the runtime CJS require (do not shadow it with createRequire).
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Pool = require('pg').Pool as typeof PgPool;
+    PoolConstructor = Pool;
   }
   return PoolConstructor;
 }
