@@ -1,4 +1,4 @@
-import crypto from 'crypto';
+import { randomBytes } from 'node:crypto';
 
 const CSRF_COOKIE_NAME = 'XSRF-TOKEN';
 const CSRF_HEADER_NAME = 'x-xsrf-token';
@@ -57,7 +57,7 @@ export function ensureCsrfCookie(req: RequestLike, res: ResponseLike) {
 
   if (existing) return existing;
 
-  const token = crypto.randomBytes(32).toString('hex');
+  const token = randomBytes(32).toString('hex');
   const isCrossOriginDeployment = Boolean(process.env.APP_URL?.trim());
   const cookieParts = [
     `${CSRF_COOKIE_NAME}=${token}`,

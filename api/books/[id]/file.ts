@@ -1,7 +1,12 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { ensureDbInitialized } from '../../_lib/db';
 import { applyCors, ensureCsrfCookie, handleOptions } from '../../_lib/http';
 
-export default async function handler(req: any, res: any) {
+export const config = {
+  maxDuration: 30,
+};
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (handleOptions(req, res)) return;
   applyCors(req, res);
   ensureCsrfCookie(req, res);

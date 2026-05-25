@@ -1,9 +1,7 @@
-import pg from 'pg';
-
-const { Pool } = pg;
+import { Pool } from 'pg';
 const MAX_UPLOAD_BYTES = 3 * 1024 * 1024;
 
-let pool: pg.Pool | null = null;
+let pool: Pool | null = null;
 let dbConfigErrorLogged = false;
 let initPromise: Promise<void> | null = null;
 
@@ -129,7 +127,7 @@ export async function getDbDiagnostic(): Promise<DbDiagnostic> {
   }
 }
 
-async function seedBooks(db: pg.Pool) {
+async function seedBooks(db: Pool) {
   const countRes = await db.query('SELECT COUNT(*) FROM books');
   if (parseInt(countRes.rows[0].count, 10) > 0) return;
 
@@ -175,7 +173,7 @@ async function seedBooks(db: pg.Pool) {
   }
 }
 
-async function reconcileExistingBooksSchema(db: pg.Pool) {
+async function reconcileExistingBooksSchema(db: Pool) {
   await db.query(`
     ALTER TABLE books
     ADD COLUMN IF NOT EXISTS file_name STRING,

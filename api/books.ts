@@ -1,8 +1,10 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node';
 import xss from 'xss';
 import { ensureDbInitialized, MAX_UPLOAD_BYTES } from './_lib/db';
 import { applyCors, ensureCsrfCookie, handleOptions, verifyCsrf } from './_lib/http';
 
 export const config = {
+  maxDuration: 30,
   api: {
     bodyParser: {
       sizeLimit: '4.5mb',
@@ -10,7 +12,7 @@ export const config = {
   },
 };
 
-export default async function handler(req: any, res: any) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (handleOptions(req, res)) return;
     applyCors(req, res);
