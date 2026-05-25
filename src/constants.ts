@@ -1,6 +1,8 @@
 import { Book, User, Star, Clock, Download, ChevronRight, Search, Upload, Quote, Edit3, TrendingUp, Globe, Mail } from 'lucide-react';
 
-export type Screen = 'home' | 'library' | 'search' | 'detail' | 'upload' | 'about';
+export type Screen = 'home' | 'library' | 'search' | 'detail' | 'upload' | 'about' | 'admin';
+
+export type ModerationStatus = 'pending' | 'approved' | 'rejected';
 
 export interface BookType {
   id: string;

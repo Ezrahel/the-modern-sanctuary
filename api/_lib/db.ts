@@ -195,7 +195,15 @@ async function reconcileExistingBooksSchema(db: PgPool) {
     ADD COLUMN IF NOT EXISTS file_type STRING,
     ADD COLUMN IF NOT EXISTS file_size INT,
     ADD COLUMN IF NOT EXISTS file_data STRING,
-    ADD COLUMN IF NOT EXISTS date_added TIMESTAMPTZ DEFAULT now();
+    ADD COLUMN IF NOT EXISTS date_added TIMESTAMPTZ DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS moderation_status STRING DEFAULT 'approved',
+    ADD COLUMN IF NOT EXISTS moderation_note STRING,
+    ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS reviewed_by STRING;
+  `);
+
+  await db.query(`
+    UPDATE books SET moderation_status = 'approved' WHERE moderation_status IS NULL;
   `);
 
   await db.query(`
@@ -256,6 +264,10 @@ export async function ensureDbInitialized() {
             file_size INT,
             file_data STRING,
             date_added TIMESTAMPTZ DEFAULT now(),
+            moderation_status STRING DEFAULT 'approved',
+            moderation_note STRING,
+            reviewed_at TIMESTAMPTZ,
+            reviewed_by STRING,
             search_vector TSVECTOR AS (to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(author, '') || ' ' || COALESCE(description, ''))) STORED
           );
           CREATE INDEX IF NOT EXISTS books_search_idx ON books USING GIN (search_vector);

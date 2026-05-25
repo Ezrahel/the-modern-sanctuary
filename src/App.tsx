@@ -41,6 +41,7 @@ import {
 import { BookCard } from './components/BookCard';
 import { UploadForm } from './components/UploadForm';
 import { BatchUploadForm } from './components/BatchUploadForm';
+import { AdminPanel } from './components/AdminPanel';
 import { ListSkeleton, SearchSkeleton } from './components/Skeleton';
 import { BOOKS, CATEGORIES, FORMATS, Screen, BookType } from './constants';
 import { buildApiUrl } from './api';
@@ -259,6 +260,12 @@ export default function App() {
   }, [currentScreen, searchQuery, selectedCategory, selectedFormat, sortBy]);
 
   useEffect(() => {
+    if (window.location.hash === '#admin') {
+      setCurrentScreen('admin');
+    }
+  }, []);
+
+  useEffect(() => {
     posthog.capture('$pageview', {
       screen: currentScreen,
       book_id: selectedBook?.id,
@@ -288,6 +295,7 @@ export default function App() {
 
   const handleUploadSuccess = (rawBook: unknown) => {
     const uploadedBook = normalizeBook(rawBook);
+    const moderationStatus = String((rawBook as any)?.moderation_status || 'pending');
 
     posthog.capture('book_uploaded', {
       book_id: uploadedBook.id,
@@ -297,26 +305,41 @@ export default function App() {
       format: uploadedBook.format,
       has_cover: Boolean(uploadedBook.cover),
       has_file: Boolean(uploadedBook.hasFile || uploadedBook.fileData),
+      moderation_status: moderationStatus,
     });
 
-    setBooks((prev) => [uploadedBook, ...prev.filter((book) => book.id !== uploadedBook.id)]);
-    setTotalBooks((prev) => prev + 1);
+    if (moderationStatus === 'approved') {
+      setBooks((prev) => [uploadedBook, ...prev.filter((book) => book.id !== uploadedBook.id)]);
+      setTotalBooks((prev) => prev + 1);
+      navigateTo('library');
+    } else {
+      window.alert(
+        (rawBook as any)?.message ||
+          'Thank you! Your book was submitted and is pending admin review before it appears in the library.'
+      );
+      navigateTo('upload');
+    }
+
     setTotalPages((prev) => Math.max(prev, 1));
-    setSelectedBook(uploadedBook);
     setCurrentPage(1);
     setSearchQuery('');
     setSelectedCategory('All');
     setSelectedFormat('All');
     setSortBy('newest');
-    navigateTo('library');
   };
 
   const handleBatchUploadSuccess = (books: any[]) => {
-    const normalized = books.map(normalizeBook);
-    setBooks((prev) => [...normalized, ...prev]);
-    setTotalBooks((prev) => prev + normalized.length);
-    setSelectedBook(normalized[0]);
-    navigateTo('library');
+    const approved = books.filter((b) => b?.moderation_status === 'approved');
+    if (approved.length > 0) {
+      const normalized = approved.map(normalizeBook);
+      setBooks((prev) => [...normalized, ...prev]);
+      setTotalBooks((prev) => prev + normalized.length);
+      setSelectedBook(normalized[0]);
+      navigateTo('library');
+    } else {
+      window.alert('Submissions received and are pending admin review before they appear in the library.');
+      navigateTo('upload');
+    }
   };
 
   const Nav = () => {
@@ -421,6 +444,7 @@ export default function App() {
             <button onClick={() => navigateTo('about')} className="hover:text-charcoal hover:underline underline-offset-4 transition-colors">Privacy Policy</button>
             <button onClick={() => navigateTo('about')} className="hover:text-charcoal hover:underline underline-offset-4 transition-colors">Contact</button>
             <button onClick={() => navigateTo('about')} className="hover:text-charcoal hover:underline underline-offset-4 transition-colors">Authors</button>
+            <button onClick={() => navigateTo('admin')} className="hover:text-charcoal hover:underline underline-offset-4 transition-colors">Admin</button>
           </div>
 
           <div className="flex gap-5 text-secondary">
@@ -1542,6 +1566,10 @@ export default function App() {
     </motion.div>
   );
 
+  const renderAdminScreen = () => (
+    <AdminPanel onExit={() => navigateTo('home')} />
+  );
+
   const renderScreen = () => {
     switch (currentScreen) {
       case 'home': return renderHomeScreen();
@@ -1550,6 +1578,7 @@ export default function App() {
       case 'detail': return renderDetailScreen();
       case 'upload': return renderUploadScreen();
       case 'about': return renderAboutScreen();
+      case 'admin': return renderAdminScreen();
       default: return renderHomeScreen();
     }
   };

@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import xss from 'xss';
 import { ensureDbInitialized, MAX_UPLOAD_BYTES } from './_lib/db';
 import { applyCors, ensureCsrfCookie, handleOptions, verifyCsrf } from './_lib/http';
+import { MODERATION_STATUS, PUBLIC_BOOKS_FILTER } from './_lib/moderation';
 
 export const config = {
   maxDuration: 30,
@@ -34,7 +35,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const offset = (pageNum - 1) * limitNum;
       const normalizedQuery = String(query || '').trim();
 
-      let whereClause = ' WHERE 1=1';
+      let whereClause = ` WHERE ${PUBLIC_BOOKS_FILTER}`;
       const params: string[] = [];
 
       let orderBy = 'date_added DESC';
@@ -154,13 +155,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       try {
         const result = await db.query(
-          `INSERT INTO books (title, author, category, description, rating, pages, format, cover, uploader, file_name, file_type, file_size, file_data)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-           RETURNING *`,
-          [title, author, category, description, ratingNum, pagesNum, format, cover, uploader, fileName, fileType, fileSizeNum, fileData]
+          `INSERT INTO books (title, author, category, description, rating, pages, format, cover, uploader, file_name, file_type, file_size, file_data, moderation_status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+           RETURNING id, title, author, category, cover, rating, pages, format, uploader, description, file_name, file_type, file_size, date_added, moderation_status, file_data IS NOT NULL AS has_file`,
+          [title, author, category, description, ratingNum, pagesNum, format, cover, uploader, fileName, fileType, fileSizeNum, fileData, MODERATION_STATUS.PENDING]
         );
 
-        return res.status(201).json(result.rows[0]);
+        return res.status(201).json({
+          ...result.rows[0],
+          message: 'Thank you! Your submission is pending review and will appear in the library once approved.',
+        });
       } catch (error: any) {
         console.error('Failed to upload book:', {
           message: error.message,

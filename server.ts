@@ -228,7 +228,7 @@ async function startServer() {
     const limitNum = parseInt(limit as string) || 50;
     const offset = (pageNum - 1) * limitNum;
 
-    let whereClause = " WHERE 1=1";
+    let whereClause = " WHERE (moderation_status IS NULL OR moderation_status = 'approved')";
     const params: any[] = [];
 
     let orderBy = "date_added DESC";
@@ -327,12 +327,15 @@ async function startServer() {
 
     try {
       const result = await db.query(
-        `INSERT INTO books (title, author, category, description, rating, pages, format, cover, uploader, file_name, file_type, file_size, file_data)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        `INSERT INTO books (title, author, category, description, rating, pages, format, cover, uploader, file_name, file_type, file_size, file_data, moderation_status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending')
          RETURNING *`,
         [title, author, category, description, ratingNum, pagesNum, format, cover, uploader, fileName, fileType, fileSizeNum, fileData]
       );
-      res.status(201).json(result.rows[0]);
+      res.status(201).json({
+        ...result.rows[0],
+        message: 'Thank you! Your submission is pending review and will appear in the library once approved.',
+      });
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: "Failed to upload book" });

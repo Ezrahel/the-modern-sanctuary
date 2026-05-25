@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { ensureDbInitialized } from '../../_lib/db';
 import { applyCors, ensureCsrfCookie, handleOptions } from '../../_lib/http';
+import { PUBLIC_BOOKS_FILTER } from '../../_lib/moderation';
 
 export const config = {
   maxDuration: 30,
@@ -29,7 +30,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const result = await db.query(
       `SELECT id, title, format, file_name, file_type, file_size, file_data, file_data IS NOT NULL AS has_file
        FROM books
-       WHERE id = $1
+       WHERE id = $1 AND ${PUBLIC_BOOKS_FILTER}
        LIMIT 1`,
       [id]
     );
