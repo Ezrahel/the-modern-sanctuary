@@ -1,6 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import xss from 'xss';
-import { ensureDbInitialized, MAX_UPLOAD_BYTES } from './_lib/db';
 import { applyCors, ensureCsrfCookie, handleOptions, verifyCsrf } from './_lib/http';
 
 export const config = {
@@ -18,6 +17,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     applyCors(req, res);
     ensureCsrfCookie(req, res);
 
+    const { ensureDbInitialized, MAX_UPLOAD_BYTES } = await import('./_lib/db');
     const db = await ensureDbInitialized().catch((error) => {
       console.error('Failed to initialize database:', error);
       return null;

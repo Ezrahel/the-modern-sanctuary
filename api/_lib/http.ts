@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { getAppUrl } from './env';
 
 const CSRF_COOKIE_NAME = 'XSRF-TOKEN';
 const CSRF_HEADER_NAME = 'x-xsrf-token';
@@ -16,7 +17,7 @@ type ResponseLike = {
 };
 
 export function applyCors(req: RequestLike, res: ResponseLike) {
-  const allowedOrigin = process.env.APP_URL?.trim();
+  const allowedOrigin = getAppUrl();
   const requestOrigin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
 
   if (allowedOrigin && requestOrigin === allowedOrigin) {
@@ -58,7 +59,7 @@ export function ensureCsrfCookie(req: RequestLike, res: ResponseLike) {
   if (existing) return existing;
 
   const token = randomBytes(32).toString('hex');
-  const isCrossOriginDeployment = Boolean(process.env.APP_URL?.trim());
+  const isCrossOriginDeployment = Boolean(getAppUrl());
   const cookieParts = [
     `${CSRF_COOKIE_NAME}=${token}`,
     'Path=/',

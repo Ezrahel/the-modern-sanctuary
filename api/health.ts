@@ -1,5 +1,4 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDbDiagnostic } from './_lib/db';
 import { applyCors, handleOptions } from './_lib/http';
 
 export const config = {
@@ -11,7 +10,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (handleOptions(req, res)) return;
     applyCors(req, res);
 
+    // Load DB only inside the handler so a bad pg bundle cannot crash module init.
+    const { getDbDiagnostic } = await import('./_lib/db');
     const diagnostic = await getDbDiagnostic();
+
     res.status(200).json({
       status: 'ok',
       database: diagnostic.initialized ? 'Ready' : diagnostic.configured ? 'Configured but failing' : 'Not Configured',

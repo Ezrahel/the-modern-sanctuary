@@ -1,9 +1,22 @@
-import { Pool } from 'pg';
+import { createRequire } from 'node:module';
+import type { Pool as PgPool } from 'pg';
+import { getCockroachDbUrl } from './env';
+
+const require = createRequire(__filename);
+
 const MAX_UPLOAD_BYTES = 3 * 1024 * 1024;
 
-let pool: Pool | null = null;
+let pool: PgPool | null = null;
 let dbConfigErrorLogged = false;
 let initPromise: Promise<void> | null = null;
+let PoolConstructor: typeof PgPool | null = null;
+
+function getPgPoolClass(): typeof PgPool {
+  if (!PoolConstructor) {
+    PoolConstructor = require('pg').Pool;
+  }
+  return PoolConstructor;
+}
 
 export type DbDiagnostic = {
   configured: boolean;
@@ -24,7 +37,7 @@ function isValidPostgresUrl(connectionString: string) {
 
 export function getPool() {
   if (!pool) {
-    const connectionString = process.env.COCKROACH_DB_URL;
+    const connectionString = getCockroachDbUrl();
     if (!connectionString) {
       console.warn('COCKROACH_DB_URL is not defined. Database features will be unavailable.');
       return null;
@@ -43,12 +56,13 @@ export function getPool() {
     }
 
     try {
+      const Pool = getPgPoolClass();
       pool = new Pool({
         connectionString,
         ssl: {
           rejectUnauthorized: false,
         },
-        connectionTimeoutMillis: 5000, // 5 seconds connection timeout
+        connectionTimeoutMillis: 10000,
       });
     } catch (error) {
       if (!dbConfigErrorLogged) {
@@ -63,7 +77,7 @@ export function getPool() {
 }
 
 export async function getDbDiagnostic(): Promise<DbDiagnostic> {
-  const connectionString = process.env.COCKROACH_DB_URL;
+  const connectionString = getCockroachDbUrl();
   if (!connectionString) {
     return {
       configured: false,
@@ -80,7 +94,8 @@ export async function getDbDiagnostic(): Promise<DbDiagnostic> {
       validUrl: false,
       initialized: false,
       stage: 'env',
-      message: 'COCKROACH_DB_URL is not a valid postgres connection string.',
+      message:
+        'COCKROACH_DB_URL is not a valid postgres connection string. In Vercel, set only the URL as the value (no KEY=, quotes, or comment lines).',
     };
   }
 
@@ -127,7 +142,7 @@ export async function getDbDiagnostic(): Promise<DbDiagnostic> {
   }
 }
 
-async function seedBooks(db: Pool) {
+async function seedBooks(db: PgPool) {
   const countRes = await db.query('SELECT COUNT(*) FROM books');
   if (parseInt(countRes.rows[0].count, 10) > 0) return;
 
@@ -173,7 +188,7 @@ async function seedBooks(db: Pool) {
   }
 }
 
-async function reconcileExistingBooksSchema(db: Pool) {
+async function reconcileExistingBooksSchema(db: PgPool) {
   await db.query(`
     ALTER TABLE books
     ADD COLUMN IF NOT EXISTS file_name STRING,
@@ -210,21 +225,17 @@ export async function ensureDbInitialized() {
   if (!initPromise) {
     initPromise = (async () => {
       try {
-        // Direct check: try a simple query on the books table
         try {
           await db.query('SELECT 1 FROM books LIMIT 1');
-
           await reconcileExistingBooksSchema(db);
           return;
-        } catch (err) {
-          // Table probably doesn't exist, proceed to full initialization
+        } catch {
           console.log('Books table not found or inaccessible, starting full initialization...');
         }
 
         console.log('Initializing database schema for the first time...');
-        
-        // Optional extension
-        await db.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`).catch(err => {
+
+        await db.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`).catch((err) => {
           console.warn('Postgres extension pg_trgm could not be created/verified.', err.message);
         });
 
@@ -256,9 +267,9 @@ export async function ensureDbInitialized() {
         console.error('CRITICAL: Database initialization failed:', {
           message: error.message,
           code: error.code,
-          detail: error.detail
+          detail: error.detail,
         });
-        initPromise = null; // Allow retry
+        initPromise = null;
         throw error;
       }
     })();

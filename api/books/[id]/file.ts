@@ -1,5 +1,4 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { ensureDbInitialized } from '../../_lib/db';
 import { applyCors, ensureCsrfCookie, handleOptions } from '../../_lib/http';
 
 export const config = {
@@ -15,6 +14,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  const { ensureDbInitialized } = await import('../../_lib/db');
   const db = await ensureDbInitialized().catch((error) => {
     console.error('Failed to initialize database:', error);
     return null;
