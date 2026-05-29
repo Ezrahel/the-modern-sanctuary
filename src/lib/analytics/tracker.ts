@@ -1,7 +1,7 @@
 /**
  * Lightweight, non-blocking client-side analytics tracker.
  * Automatically manages anonymous Visitor ID, Session Tokens, heartbeats,
- * bot filtering, and coordinates event capturing to local database and GA4.
+ * bot filtering, and coordinates event capturing to local database.
  */
 
 import { buildApiUrl } from '../../api';
@@ -231,15 +231,6 @@ class AnalyticsTracker {
       screenName,
       path,
     });
-
-    // Also trigger GA4 if it's installed
-    if (typeof window !== 'undefined' && (window as any).gtag) {
-      (window as any).gtag('event', 'page_view', {
-        page_title: screenName,
-        page_location: window.location.href,
-        page_path: path,
-      });
-    }
   }
 
   public trackBookView(bookId: string, title: string) {
@@ -247,13 +238,6 @@ class AnalyticsTracker {
       bookId,
       title,
     });
-
-    if (typeof window !== 'undefined' && (window as any).gtag) {
-      (window as any).gtag('event', 'book_view', {
-        book_id: bookId,
-        book_title: title,
-      });
-    }
   }
 
   public trackDownload(bookId: string, title: string, format: string) {
@@ -262,14 +246,6 @@ class AnalyticsTracker {
       title,
       format,
     });
-
-    if (typeof window !== 'undefined' && (window as any).gtag) {
-      (window as any).gtag('event', 'book_download', {
-        book_id: bookId,
-        book_title: title,
-        file_format: format,
-      });
-    }
   }
 
   public trackCustomEvent(eventType: string, eventData?: Record<string, unknown>) {
@@ -277,10 +253,6 @@ class AnalyticsTracker {
       eventType,
       eventData: eventData ? JSON.stringify(eventData) : null,
     });
-
-    if (typeof window !== 'undefined' && (window as any).gtag) {
-      (window as any).gtag('event', eventType, eventData || {});
-    }
   }
 }
 
