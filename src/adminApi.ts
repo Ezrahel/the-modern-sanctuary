@@ -24,6 +24,12 @@ export type AdminBook = {
   has_file?: boolean;
 };
 
+/** Read the XSRF-TOKEN cookie so we can echo it back in the header. */
+function getCsrfToken(): string {
+  const match = document.cookie.match(/(?:^|;\s*)XSRF-TOKEN=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
 async function parseJson(response: Response) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -37,7 +43,10 @@ export async function adminLogin(email: string, password: string) {
     await fetch(buildApiUrl('/api/admin/login'), {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-xsrf-token': getCsrfToken(),
+      },
       body: JSON.stringify({ email, password }),
     })
   );
@@ -48,6 +57,9 @@ export async function adminLogout() {
     await fetch(buildApiUrl('/api/admin/logout'), {
       method: 'POST',
       credentials: 'include',
+      headers: {
+        'x-xsrf-token': getCsrfToken(),
+      },
     })
   );
 }
@@ -84,7 +96,10 @@ export async function moderateBook(id: string, action: 'approve' | 'reject', not
     await fetch(buildApiUrl(`/api/admin/books/${id}/moderate`), {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-xsrf-token': getCsrfToken(),
+      },
       body: JSON.stringify({ action, note }),
     })
   );
@@ -95,7 +110,10 @@ export async function updateAdminBook(id: string, payload: Record<string, unknow
     await fetch(buildApiUrl(`/api/admin/books/${id}`), {
       method: 'PATCH',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-xsrf-token': getCsrfToken(),
+      },
       body: JSON.stringify(payload),
     })
   );
@@ -106,6 +124,10 @@ export async function deleteAdminBook(id: string) {
     await fetch(buildApiUrl(`/api/admin/books/${id}`), {
       method: 'DELETE',
       credentials: 'include',
+      headers: {
+        'x-xsrf-token': getCsrfToken(),
+      },
     })
   );
 }
+

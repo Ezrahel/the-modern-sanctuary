@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Download, 
@@ -16,15 +16,13 @@ import {
   Globe as PublicIcon, 
   Edit3, 
   TrendingUp, 
-  Globe, 
+  Globe,
   Mail,
   ArrowRight,
   Filter,
   SortAsc,
-  Calendar,
   Layers,
   FileText,
-  Settings,
   Maximize2,
   X,
   CheckCircle2,
@@ -32,7 +30,6 @@ import {
   Linkedin,
   Twitter,
   Bookmark,
-  BookmarkCheck,
   ChevronDown,
   ChevronsUpDown,
   Settings2,
@@ -46,8 +43,10 @@ import { ListSkeleton, SearchSkeleton } from './components/Skeleton';
 import { BOOKS, CATEGORIES, FORMATS, Screen, BookType } from './constants';
 import { buildApiUrl } from './api';
 import { posthog } from './posthog';
+import { tracker } from './lib/analytics/tracker';
 
 export default function App() {
+  const booksAbortRef = useRef<AbortController | null>(null);
   const [currentScreen, setCurrentScreen] = useState<Screen>('home');
   const [selectedBook, setSelectedBook] = useState<BookType | null>(null);
 
@@ -159,6 +158,9 @@ export default function App() {
       has_file: Boolean(book.hasFile || book.fileData),
     });
 
+    // Custom tracker download capture
+    tracker.trackDownload(book.id, book.title, book.format || 'PDF');
+
     if (book.fileData) {
       triggerFileDownload(book, book.fileData, book.fileName);
       return;
@@ -216,6 +218,12 @@ export default function App() {
   };
 
   const fetchBooks = async (page: number = 1) => {
+    if (booksAbortRef.current) {
+      booksAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    booksAbortRef.current = controller;
+
     setIsLoading(true);
     setLibraryFetchError(null);
     try {
@@ -229,6 +237,7 @@ export default function App() {
       });
       const response = await fetch(buildApiUrl(`/api/books?${params}`), {
         credentials: 'include',
+        signal: controller.signal,
       });
       
       if (!response.ok) {
@@ -249,11 +258,14 @@ export default function App() {
         setBooks(Array.isArray(data) ? data.map(normalizeBook) : []);
       }
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return;
       console.error(err);
       setLibraryFetchError(err instanceof Error ? err.message : 'Could not load books. Check your connection.');
       setBooks([]);
     } finally {
-      setIsLoading(false);
+      if (booksAbortRef.current === controller) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -276,6 +288,12 @@ export default function App() {
       book_id: selectedBook?.id,
       book_title: selectedBook?.title,
     });
+
+    // Custom tracker pageview and book view captures
+    tracker.trackPageView(currentScreen, window.location.pathname);
+    if (currentScreen === 'detail' && selectedBook) {
+      tracker.trackBookView(selectedBook.id, selectedBook.title);
+    }
   }, [currentScreen, selectedBook]);
 
   const handlePageChange = (newPage: number) => {

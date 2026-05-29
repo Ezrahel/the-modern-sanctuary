@@ -228,6 +228,101 @@ async function reconcileExistingBooksSchema(db: PgPool) {
   });
 }
 
+async function initAnalyticsSchema(db: PgPool) {
+  try {
+    console.log('Ensuring CockroachDB-optimized analytics tables and indexes are initialized...');
+    
+    // 1. Visitors table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS analytics_visitors (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        visitor_hash STRING UNIQUE NOT NULL,
+        first_seen TIMESTAMPTZ DEFAULT now(),
+        last_seen TIMESTAMPTZ DEFAULT now(),
+        device_type STRING,
+        browser STRING,
+        os STRING,
+        country STRING,
+        referrer STRING,
+        is_returning BOOLEAN DEFAULT false
+      );
+    `);
+
+    // 2. Sessions table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS analytics_sessions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        visitor_id UUID REFERENCES analytics_visitors(id) ON DELETE CASCADE,
+        session_token STRING UNIQUE NOT NULL,
+        started_at TIMESTAMPTZ DEFAULT now(),
+        last_activity TIMESTAMPTZ DEFAULT now(),
+        duration_seconds INT DEFAULT 0,
+        bounce BOOLEAN DEFAULT true
+      );
+      CREATE INDEX IF NOT EXISTS idx_sessions_visitor ON analytics_sessions(visitor_id);
+    `);
+
+    // 3. Page views table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS analytics_page_views (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id UUID REFERENCES analytics_sessions(id) ON DELETE CASCADE,
+        visitor_id UUID REFERENCES analytics_visitors(id) ON DELETE CASCADE,
+        path STRING NOT NULL,
+        screen_name STRING NOT NULL,
+        timestamp TIMESTAMPTZ DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_page_views_session ON analytics_page_views(session_id);
+      CREATE INDEX IF NOT EXISTS idx_page_views_visitor ON analytics_page_views(visitor_id);
+      CREATE INDEX IF NOT EXISTS idx_page_views_timestamp ON analytics_page_views(timestamp DESC);
+    `);
+
+    // 4. Book views table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS analytics_book_views (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id UUID REFERENCES analytics_sessions(id) ON DELETE CASCADE,
+        visitor_id UUID REFERENCES analytics_visitors(id) ON DELETE CASCADE,
+        book_id UUID REFERENCES books(id) ON DELETE CASCADE,
+        timestamp TIMESTAMPTZ DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_book_views_book ON analytics_book_views(book_id);
+      CREATE INDEX IF NOT EXISTS idx_book_views_timestamp ON analytics_book_views(timestamp DESC);
+    `);
+
+    // 5. Downloads table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS analytics_downloads (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id UUID REFERENCES analytics_sessions(id) ON DELETE CASCADE,
+        visitor_id UUID REFERENCES analytics_visitors(id) ON DELETE CASCADE,
+        book_id UUID REFERENCES books(id) ON DELETE CASCADE,
+        timestamp TIMESTAMPTZ DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_downloads_book ON analytics_downloads(book_id);
+      CREATE INDEX IF NOT EXISTS idx_downloads_timestamp ON analytics_downloads(timestamp DESC);
+    `);
+
+    // 6. Events table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS analytics_events (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id UUID REFERENCES analytics_sessions(id) ON DELETE CASCADE,
+        visitor_id UUID REFERENCES analytics_visitors(id) ON DELETE CASCADE,
+        event_type STRING NOT NULL,
+        event_data STRING,
+        timestamp TIMESTAMPTZ DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_events_type_timestamp ON analytics_events(event_type, timestamp DESC);
+    `);
+
+    console.log('Analytics schema initialization complete.');
+  } catch (error) {
+    console.error('Failed to initialize analytics schemas:', error);
+    throw error;
+  }
+}
+
 export async function ensureDbInitialized() {
   const db = getPool();
   if (!db) return null;
@@ -238,6 +333,7 @@ export async function ensureDbInitialized() {
         try {
           await db.query('SELECT 1 FROM books LIMIT 1');
           await reconcileExistingBooksSchema(db);
+          await initAnalyticsSchema(db);
           return;
         } catch {
           console.log('Books table not found or inaccessible, starting full initialization...');
@@ -276,6 +372,7 @@ export async function ensureDbInitialized() {
         `);
 
         await seedBooks(db);
+        await initAnalyticsSchema(db);
         console.log('Database schema initialization complete.');
       } catch (error: any) {
         console.error('CRITICAL: Database initialization failed:', {

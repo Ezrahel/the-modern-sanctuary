@@ -8,6 +8,14 @@ import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import xss from "xss";
 import crypto from "crypto";
+import {
+  requireAdmin,
+  isAdminAuthConfigured,
+  verifyAdminCredentials,
+  signAdminSession,
+  setAdminSessionCookie,
+  clearAdminSessionCookie,
+} from "./api/_lib/auth";
 
 dotenv.config();
 
@@ -67,6 +75,100 @@ function getPool() {
   return pool;
 }
 
+async function initAnalyticsSchema(db: pg.Pool) {
+  try {
+    console.log('Ensuring CockroachDB-optimized analytics tables and indexes are initialized...');
+    
+    // 1. Visitors table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS analytics_visitors (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        visitor_hash STRING UNIQUE NOT NULL,
+        first_seen TIMESTAMPTZ DEFAULT now(),
+        last_seen TIMESTAMPTZ DEFAULT now(),
+        device_type STRING,
+        browser STRING,
+        os STRING,
+        country STRING,
+        referrer STRING,
+        is_returning BOOLEAN DEFAULT false
+      );
+    `);
+
+    // 2. Sessions table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS analytics_sessions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        visitor_id UUID REFERENCES analytics_visitors(id) ON DELETE CASCADE,
+        session_token STRING UNIQUE NOT NULL,
+        started_at TIMESTAMPTZ DEFAULT now(),
+        last_activity TIMESTAMPTZ DEFAULT now(),
+        duration_seconds INT DEFAULT 0,
+        bounce BOOLEAN DEFAULT true
+      );
+      CREATE INDEX IF NOT EXISTS idx_sessions_visitor ON analytics_sessions(visitor_id);
+    `);
+
+    // 3. Page views table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS analytics_page_views (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id UUID REFERENCES analytics_sessions(id) ON DELETE CASCADE,
+        visitor_id UUID REFERENCES analytics_visitors(id) ON DELETE CASCADE,
+        path STRING NOT NULL,
+        screen_name STRING NOT NULL,
+        timestamp TIMESTAMPTZ DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_page_views_session ON analytics_page_views(session_id);
+      CREATE INDEX IF NOT EXISTS idx_page_views_visitor ON analytics_page_views(visitor_id);
+      CREATE INDEX IF NOT EXISTS idx_page_views_timestamp ON analytics_page_views(timestamp DESC);
+    `);
+
+    // 4. Book views table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS analytics_book_views (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id UUID REFERENCES analytics_sessions(id) ON DELETE CASCADE,
+        visitor_id UUID REFERENCES analytics_visitors(id) ON DELETE CASCADE,
+        book_id UUID REFERENCES books(id) ON DELETE CASCADE,
+        timestamp TIMESTAMPTZ DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_book_views_book ON analytics_book_views(book_id);
+      CREATE INDEX IF NOT EXISTS idx_book_views_timestamp ON analytics_book_views(timestamp DESC);
+    `);
+
+    // 5. Downloads table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS analytics_downloads (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id UUID REFERENCES analytics_sessions(id) ON DELETE CASCADE,
+        visitor_id UUID REFERENCES analytics_visitors(id) ON DELETE CASCADE,
+        book_id UUID REFERENCES books(id) ON DELETE CASCADE,
+        timestamp TIMESTAMPTZ DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_downloads_book ON analytics_downloads(book_id);
+      CREATE INDEX IF NOT EXISTS idx_downloads_timestamp ON analytics_downloads(timestamp DESC);
+    `);
+
+    // 6. Events table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS analytics_events (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id UUID REFERENCES analytics_sessions(id) ON DELETE CASCADE,
+        visitor_id UUID REFERENCES analytics_visitors(id) ON DELETE CASCADE,
+        event_type STRING NOT NULL,
+        event_data STRING,
+        timestamp TIMESTAMPTZ DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_events_type_timestamp ON analytics_events(event_type, timestamp DESC);
+    `);
+
+    console.log('Analytics schema initialization complete.');
+  } catch (error) {
+    console.error('Failed to initialize analytics schemas:', error);
+  }
+}
+
 async function initDb() {
   const db = getPool();
   if (!db) return;
@@ -82,9 +184,14 @@ async function initDb() {
         ADD COLUMN IF NOT EXISTS file_name STRING,
         ADD COLUMN IF NOT EXISTS file_type STRING,
         ADD COLUMN IF NOT EXISTS file_size INT,
-        ADD COLUMN IF NOT EXISTS file_data STRING;
+        ADD COLUMN IF NOT EXISTS file_data STRING,
+        ADD COLUMN IF NOT EXISTS moderation_status STRING DEFAULT 'approved',
+        ADD COLUMN IF NOT EXISTS moderation_note STRING,
+        ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS reviewed_by STRING;
       `).catch(err => console.debug('Optional column check failed (likely already exists):', err.message));
       
+      await initAnalyticsSchema(db);
       console.log("Database initialized (schema already exists)");
       return;
     } catch (err) {
@@ -113,6 +220,10 @@ async function initDb() {
         file_type STRING,
         file_size INT,
         file_data STRING,
+        moderation_status STRING DEFAULT 'approved',
+        moderation_note STRING,
+        reviewed_at TIMESTAMPTZ,
+        reviewed_by STRING,
         date_added TIMESTAMPTZ DEFAULT now(),
         search_vector TSVECTOR AS (to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(author, '') || ' ' || COALESCE(description, ''))) STORED
       );
@@ -133,6 +244,7 @@ async function initDb() {
         [b.title, b.author, b.category, b.cover, b.rating, b.pages, b.format, b.description, 'System']
       );
     }
+    await initAnalyticsSchema(db);
     console.log("Database initialized and seeded");
   } catch (err) {
     console.error("Failed to initialize database:", err);
@@ -217,6 +329,647 @@ async function startServer() {
   // CSRF token endpoint for the client
   app.get("/api/csrf-token", (req, res) => {
     res.json({ token: req.cookies[CSRF_COOKIE_NAME] });
+  });
+
+  // Admin auth routes (mirroring api/admin/*.ts for local dev)
+  app.get("/api/admin/session", (req, res) => {
+    if (!isAdminAuthConfigured()) {
+      return res.json({ authenticated: false, configured: false });
+    }
+    const admin = requireAdmin(req);
+    return res.json({
+      authenticated: Boolean(admin),
+      configured: true,
+      email: admin?.email,
+    });
+  });
+
+  app.post("/api/admin/login", async (req, res) => {
+    if (!isAdminAuthConfigured()) {
+      return res.status(503).json({ error: 'Admin login is not configured on the server' });
+    }
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+    const valid = await verifyAdminCredentials(String(email), String(password));
+    if (!valid) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    const token = signAdminSession(String(email).trim().toLowerCase());
+    setAdminSessionCookie(res, token);
+    return res.json({ ok: true, email: String(email).trim().toLowerCase() });
+  });
+
+  app.post("/api/admin/logout", (req, res) => {
+    clearAdminSessionCookie(res);
+    return res.json({ ok: true });
+  });
+
+  // ── Admin Book Management Routes ──────────────────────────────────
+  // These mirror api/admin/[[...route]].ts for local dev
+
+  app.get("/api/admin/books", async (req, res) => {
+    const admin = requireAdmin(req);
+    if (!admin) {
+      return res.status(401).json({ error: "Unauthorized access. Please log in." });
+    }
+
+    const db = getPool();
+    if (!db) return res.status(503).json({ error: "Database not configured" });
+
+    const status = String(req.query.status || 'all').toLowerCase();
+    const page = parseInt(String(req.query.page || '1'), 10) || 1;
+    const limit = Math.min(parseInt(String(req.query.limit || '50'), 10) || 50, 100);
+    const offset = (page - 1) * limit;
+    const query = String(req.query.query || '').trim();
+
+    let whereClause = ' WHERE 1=1';
+    const params: any[] = [];
+
+    if (status !== 'all' && ['pending', 'approved', 'rejected'].includes(status)) {
+      params.push(status);
+      whereClause += ` AND moderation_status = $${params.length}`;
+    }
+
+    if (query) {
+      params.push(`%${query}%`);
+      const qIdx = params.length;
+      whereClause += ` AND (title ILIKE $${qIdx} OR author ILIKE $${qIdx} OR uploader ILIKE $${qIdx})`;
+    }
+
+    try {
+      const countResult = await db.query(`SELECT COUNT(*) FROM books${whereClause}`, params);
+      const total = parseInt(countResult.rows[0].count, 10);
+      const listParams = [...params, String(limit), String(offset)];
+      const result = await db.query(
+        `SELECT id, title, author, category, cover, rating, pages, format, uploader, description,
+                file_name, file_type, file_size, date_added,
+                moderation_status, moderation_note, reviewed_at, reviewed_by,
+                file_data IS NOT NULL AS has_file
+         FROM books${whereClause}
+         ORDER BY date_added DESC
+         LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`,
+        listParams
+      );
+
+      return res.json({
+        books: result.rows.map((row: any) => ({ ...row, has_file: row.has_file ?? false })),
+        total,
+        page,
+        totalPages: Math.ceil(total / limit),
+      });
+    } catch (err: any) {
+      console.error('[Admin Books List Error]', err.message);
+      return res.status(500).json({ error: 'Failed to fetch books' });
+    }
+  });
+
+  app.get("/api/admin/books/:id", async (req, res) => {
+    const admin = requireAdmin(req);
+    if (!admin) {
+      return res.status(401).json({ error: "Unauthorized access. Please log in." });
+    }
+
+    const db = getPool();
+    if (!db) return res.status(503).json({ error: "Database not configured" });
+
+    try {
+      const result = await db.query(
+        `SELECT id, title, author, category, cover, rating, pages, format, uploader, description,
+                file_name, file_type, file_size, date_added,
+                moderation_status, moderation_note, reviewed_at, reviewed_by,
+                file_data IS NOT NULL AS has_file
+         FROM books WHERE id = $1 LIMIT 1`,
+        [req.params.id]
+      );
+      if (result.rowCount === 0) {
+        return res.status(404).json({ error: 'Book not found' });
+      }
+      return res.json({ ...result.rows[0], has_file: result.rows[0].has_file ?? false });
+    } catch (err: any) {
+      console.error('[Admin Book Get Error]', err.message);
+      return res.status(500).json({ error: 'Failed to fetch book' });
+    }
+  });
+
+  app.post("/api/admin/books/:id/moderate", async (req, res) => {
+    const admin = requireAdmin(req);
+    if (!admin) {
+      return res.status(401).json({ error: "Unauthorized access. Please log in." });
+    }
+
+    const db = getPool();
+    if (!db) return res.status(503).json({ error: "Database not configured" });
+
+    const action = String(req.body?.action || '').toLowerCase();
+    const note = req.body?.note ? String(req.body.note).slice(0, 2000) : null;
+
+    if (action !== 'approve' && action !== 'reject') {
+      return res.status(400).json({ error: 'action must be approve or reject' });
+    }
+
+    const moderationStatus = action === 'approve' ? 'approved' : 'rejected';
+
+    try {
+      const result = await db.query(
+        `UPDATE books SET
+          moderation_status = $2,
+          moderation_note = $3,
+          reviewed_at = now(),
+          reviewed_by = $4
+        WHERE id = $1
+        RETURNING id, title, author, category, cover, rating, pages, format, uploader, description,
+                  file_name, file_type, file_size, date_added,
+                  moderation_status, moderation_note, reviewed_at, reviewed_by,
+                  file_data IS NOT NULL AS has_file`,
+        [req.params.id, moderationStatus, note, admin.email]
+      );
+
+      if (result.rowCount === 0) {
+        return res.status(404).json({ error: 'Book not found' });
+      }
+
+      return res.json({ ...result.rows[0], has_file: result.rows[0].has_file ?? false });
+    } catch (err: any) {
+      console.error('[Admin Moderate Error]', err.message);
+      return res.status(500).json({ error: 'Failed to moderate book' });
+    }
+  });
+
+  app.patch("/api/admin/books/:id", async (req, res) => {
+    const admin = requireAdmin(req);
+    if (!admin) {
+      return res.status(401).json({ error: "Unauthorized access. Please log in." });
+    }
+
+    const db = getPool();
+    if (!db) return res.status(503).json({ error: "Database not configured" });
+
+    const id = req.params.id;
+    const body = req.body || {};
+
+    try {
+      const existing = await db.query(`SELECT id FROM books WHERE id = $1 LIMIT 1`, [id]);
+      if (existing.rowCount === 0) {
+        return res.status(404).json({ error: 'Book not found' });
+      }
+
+      const result = await db.query(
+        `UPDATE books SET
+          title = COALESCE($2, title),
+          author = COALESCE($3, author),
+          category = COALESCE($4, category),
+          description = COALESCE($5, description),
+          rating = COALESCE($6, rating),
+          pages = COALESCE($7, pages),
+          format = COALESCE($8, format),
+          cover = COALESCE($9, cover),
+          uploader = COALESCE($10, uploader),
+          moderation_status = COALESCE($11, moderation_status),
+          moderation_note = COALESCE($12, moderation_note),
+          reviewed_at = CASE WHEN $11 IS NOT NULL THEN now() ELSE reviewed_at END,
+          reviewed_by = CASE WHEN $11 IS NOT NULL THEN $13 ELSE reviewed_by END
+        WHERE id = $1
+        RETURNING id, title, author, category, cover, rating, pages, format, uploader, description,
+                  file_name, file_type, file_size, date_added,
+                  moderation_status, moderation_note, reviewed_at, reviewed_by,
+                  file_data IS NOT NULL AS has_file`,
+        [
+          id,
+          body.title || null, body.author || null, body.category || null,
+          body.description || null, body.rating ?? null, body.pages ?? null,
+          body.format || null, body.cover || null, body.uploader || null,
+          body.moderationStatus || body.moderation_status || null,
+          body.moderationNote != null ? String(body.moderationNote) : body.moderation_note != null ? String(body.moderation_note) : null,
+          admin.email,
+        ]
+      );
+
+      return res.json({ ...result.rows[0], has_file: result.rows[0].has_file ?? false });
+    } catch (err: any) {
+      console.error('[Admin Book Update Error]', err.message);
+      return res.status(500).json({ error: 'Failed to update book' });
+    }
+  });
+
+  app.delete("/api/admin/books/:id", async (req, res) => {
+    const admin = requireAdmin(req);
+    if (!admin) {
+      return res.status(401).json({ error: "Unauthorized access. Please log in." });
+    }
+
+    const db = getPool();
+    if (!db) return res.status(503).json({ error: "Database not configured" });
+
+    try {
+      const result = await db.query(`DELETE FROM books WHERE id = $1 RETURNING id`, [req.params.id]);
+      if (result.rowCount === 0) {
+        return res.status(404).json({ error: 'Book not found' });
+      }
+      return res.json({ ok: true, id: req.params.id });
+    } catch (err: any) {
+      console.error('[Admin Book Delete Error]', err.message);
+      return res.status(500).json({ error: 'Failed to delete book' });
+    }
+  });
+
+  app.get("/api/admin/books/:id/file", async (req, res) => {
+    const admin = requireAdmin(req);
+    if (!admin) {
+      return res.status(401).json({ error: "Unauthorized access. Please log in." });
+    }
+
+    const db = getPool();
+    if (!db) return res.status(503).json({ error: "Database not configured" });
+
+    try {
+      const result = await db.query(
+        `SELECT id, title, format, file_name, file_type, file_size, file_data, moderation_status
+         FROM books WHERE id = $1 LIMIT 1`,
+        [req.params.id]
+      );
+      if (result.rowCount === 0) {
+        return res.status(404).json({ error: 'Book not found' });
+      }
+      if (!result.rows[0].file_data) {
+        return res.status(404).json({ error: 'No file stored for this book' });
+      }
+      return res.json(result.rows[0]);
+    } catch (err: any) {
+      console.error('[Admin Book File Error]', err.message);
+      return res.status(500).json({ error: 'Failed to fetch book file' });
+    }
+  });
+
+  app.post("/api/analytics", async (req, res) => {
+    const db = getPool();
+    if (!db) return res.status(503).json({ error: "Database not configured" });
+
+    const userAgent = req.headers['user-agent'] || '';
+    if (/bot|spider|crawl|slurp|lighthouse|headless|selenium|puppeteer|screaming/i.test(userAgent)) {
+      return res.json({ ok: true, status: 'ignored_bot' });
+    }
+
+    const { type, payload } = req.body || {};
+    if (!type || !payload || !payload.visitorId || !payload.sessionToken) {
+      return res.status(400).json({ error: 'Invalid event payload' });
+    }
+
+    const { visitorId, sessionToken, referrer, path, screenName, timestamp } = payload;
+    
+    // Anonymize IP
+    const rawIp = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
+    const clientIp = rawIp.split(',')[0].trim();
+    
+    const hashedVisitorHash = crypto.createHash('sha256').update(visitorId + 'sanctuary-salt').digest('hex');
+
+    // Simple device parsing
+    let device = 'Desktop';
+    if (/mobile|android|iphone|ipad|phone/i.test(userAgent)) {
+      device = /ipad|tablet/i.test(userAgent) ? 'Tablet' : 'Mobile';
+    }
+    let os = 'Unknown OS';
+    if (/windows/i.test(userAgent)) os = 'Windows';
+    else if (/macintosh|mac os x/i.test(userAgent)) os = 'macOS';
+    else if (/iphone|ipad|ipod/i.test(userAgent)) os = 'iOS';
+    else if (/android/i.test(userAgent)) os = 'Android';
+    else if (/linux/i.test(userAgent)) os = 'Linux';
+
+    let browser = 'Unknown Browser';
+    if (/chrome|crios/i.test(userAgent) && !/edge|edg/i.test(userAgent) && !/opr/i.test(userAgent)) browser = 'Chrome';
+    else if (/safari/i.test(userAgent) && !/chrome|crios/i.test(userAgent)) browser = 'Safari';
+    else if (/firefox|fxios/i.test(userAgent)) browser = 'Firefox';
+    else if (/edge|edg/i.test(userAgent)) browser = 'Edge';
+    else if (/opr/i.test(userAgent)) browser = 'Opera';
+
+    try {
+      const visitorRes = await db.query(
+        `INSERT INTO analytics_visitors (visitor_hash, device_type, browser, os, referrer, country, first_seen, last_seen)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (visitor_hash) DO UPDATE 
+         SET last_seen = EXCLUDED.last_seen
+         RETURNING id, (first_seen < now() - INTERVAL '30 minutes') as is_returning_visitor`,
+        [
+          hashedVisitorHash,
+          device,
+          browser,
+          os,
+          referrer ? String(referrer).substring(0, 255) : 'Direct',
+          'Unknown',
+          timestamp,
+          timestamp
+        ]
+      );
+
+      const dbVisitorId = visitorRes.rows[0].id;
+      const isReturning = visitorRes.rows[0].is_returning_visitor;
+
+      if (isReturning) {
+        await db.query(`UPDATE analytics_visitors SET is_returning = TRUE WHERE id = $1`, [dbVisitorId]);
+      }
+
+      const sessionRes = await db.query(
+        `INSERT INTO analytics_sessions (visitor_id, session_token, started_at, last_activity)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (session_token) DO UPDATE 
+         SET last_activity = EXCLUDED.last_activity
+         RETURNING id`,
+        [dbVisitorId, sessionToken, timestamp, timestamp]
+      );
+
+      const dbSessionId = sessionRes.rows[0].id;
+
+      if (type === 'pageview') {
+        await db.query(
+          `INSERT INTO analytics_page_views (session_id, visitor_id, path, screen_name, timestamp)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [dbSessionId, dbVisitorId, path || '/', screenName || 'Unknown', timestamp]
+        );
+      } 
+      else if (type === 'bookview') {
+        const bookId = payload.bookId;
+        if (bookId) {
+          await db.query(
+            `INSERT INTO analytics_book_views (session_id, visitor_id, book_id, timestamp)
+             VALUES ($1, $2, $3, $4)`,
+            [dbSessionId, dbVisitorId, bookId, timestamp]
+          );
+        }
+      } 
+      else if (type === 'download') {
+        const bookId = payload.bookId;
+        if (bookId) {
+          await db.query(
+            `INSERT INTO analytics_downloads (session_id, visitor_id, book_id, timestamp)
+             VALUES ($1, $2, $3, $4)`,
+            [dbSessionId, dbVisitorId, bookId, timestamp]
+          );
+        }
+      } 
+      else if (type === 'heartbeat') {
+        const duration = parseInt(payload.durationSeconds, 10) || 0;
+        if (duration > 0) {
+          await db.query(
+            `UPDATE analytics_sessions
+             SET duration_seconds = duration_seconds + $1, bounce = FALSE, last_activity = $2
+             WHERE id = $3`,
+            [duration, timestamp, dbSessionId]
+          );
+        }
+      } 
+      else if (type === 'custom') {
+        await db.query(
+          `INSERT INTO analytics_events (session_id, visitor_id, event_type, event_data, timestamp)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [dbSessionId, dbVisitorId, payload.eventType || 'unknown', payload.eventData || null, timestamp]
+        );
+      }
+
+      res.json({ ok: true });
+    } catch (err: any) {
+      console.error('Express analytics error:', err.message);
+      res.status(500).json({ error: 'Failed to record tracking event' });
+    }
+  });
+
+  app.get("/api/admin/analytics", async (req, res) => {
+    const admin = requireAdmin(req);
+    if (!admin) {
+      return res.status(401).json({ error: "Admin authentication required" });
+    }
+
+    const db = getPool();
+    if (!db) return res.status(503).json({ error: "Database not configured" });
+
+    const mode = String(req.query.mode || 'summary');
+
+    try {
+      if (mode === 'export') {
+        const type = String(req.query.type || 'traffic');
+        let csvContent = '';
+        
+        if (type === 'books') {
+          const result = await db.query(`
+            SELECT b.title, b.author, b.category, 
+                   COUNT(DISTINCT v.id) as views, 
+                   COUNT(DISTINCT d.id) as downloads
+            FROM books b
+            LEFT JOIN analytics_book_views v ON v.book_id = b.id
+            LEFT JOIN analytics_downloads d ON d.book_id = b.id
+            GROUP BY b.id, b.title, b.author, b.category
+            ORDER BY downloads DESC, views DESC
+          `);
+
+          csvContent = 'Book Title,Author,Category,Views,Downloads\n';
+          for (const row of result.rows) {
+            const title = `"${row.title.replace(/"/g, '""')}"`;
+            const author = `"${row.author.replace(/"/g, '""')}"`;
+            const category = `"${row.category.replace(/"/g, '""')}"`;
+            csvContent += `${title},${author},${category},${row.views},${row.downloads}\n`;
+          }
+          res.setHeader('Content-Type', 'text/csv');
+          res.setHeader('Content-Disposition', 'attachment; filename="sanctuary_book_analytics.csv"');
+          return res.status(200).send(csvContent);
+        } 
+        else {
+          const result = await db.query(`
+            SELECT DATE(timestamp) as date, COUNT(*) as pageviews, COUNT(DISTINCT visitor_id) as unique_visitors
+            FROM analytics_page_views
+            WHERE timestamp >= now() - INTERVAL '30 days'
+            GROUP BY DATE(timestamp)
+            ORDER BY DATE(timestamp) DESC
+          `);
+
+          csvContent = 'Date,Pageviews,Unique Visitors\n';
+          for (const row of result.rows) {
+            const dateStr = new Date(row.date).toISOString().split('T')[0];
+            csvContent += `${dateStr},${row.pageviews},${row.unique_visitors}\n`;
+          }
+          res.setHeader('Content-Type', 'text/csv');
+          res.setHeader('Content-Disposition', 'attachment; filename="sanctuary_traffic_analytics.csv"');
+          return res.status(200).send(csvContent);
+        }
+      }
+
+      if (mode === 'summary') {
+        const realTimeRes = await db.query(`
+          SELECT COUNT(DISTINCT visitor_id) as active_users 
+          FROM analytics_sessions 
+          WHERE last_activity >= now() - INTERVAL '40 seconds'
+        `);
+        const activeUsers = parseInt(realTimeRes.rows[0].active_users, 10) || 0;
+
+        const trafficTodayRes = await db.query(`
+          SELECT COUNT(*) as pageviews, COUNT(DISTINCT visitor_id) as unique_visitors
+          FROM analytics_page_views
+          WHERE timestamp >= now() - INTERVAL '24 hours'
+        `);
+        const pageviewsToday = parseInt(trafficTodayRes.rows[0].pageviews, 10) || 0;
+        const visitorsToday = parseInt(trafficTodayRes.rows[0].unique_visitors, 10) || 0;
+
+        const trafficYesterdayRes = await db.query(`
+          SELECT COUNT(*) as pageviews, COUNT(DISTINCT visitor_id) as unique_visitors
+          FROM analytics_page_views
+          WHERE timestamp >= now() - INTERVAL '48 hours' AND timestamp < now() - INTERVAL '24 hours'
+        `);
+        const pageviewsYesterday = parseInt(trafficYesterdayRes.rows[0].pageviews, 10) || 0;
+        const visitorsYesterday = parseInt(trafficYesterdayRes.rows[0].unique_visitors, 10) || 0;
+
+        const pageviewsGrowth = pageviewsYesterday > 0 ? ((pageviewsToday - pageviewsYesterday) / pageviewsYesterday) * 100 : 0;
+        const visitorsGrowth = visitorsYesterday > 0 ? ((visitorsToday - visitorsYesterday) / visitorsYesterday) * 100 : 0;
+
+        const downloadsTodayRes = await db.query(`
+          SELECT COUNT(*) as count FROM analytics_downloads WHERE timestamp >= now() - INTERVAL '24 hours'
+        `);
+        const downloadsYesterdayRes = await db.query(`
+          SELECT COUNT(*) as count FROM analytics_downloads WHERE timestamp >= now() - INTERVAL '48 hours' AND timestamp < now() - INTERVAL '24 hours'
+        `);
+        const downloadsToday = parseInt(downloadsTodayRes.rows[0].count, 10) || 0;
+        const downloadsYesterday = parseInt(downloadsYesterdayRes.rows[0].count, 10) || 0;
+        const downloadsGrowth = downloadsYesterday > 0 ? ((downloadsToday - downloadsYesterday) / downloadsYesterday) * 100 : 0;
+
+        const totalVisitorsRes = await db.query(`SELECT COUNT(*) as count FROM analytics_visitors`);
+        const totalPageviewsRes = await db.query(`SELECT COUNT(*) as count FROM analytics_page_views`);
+        const totalDownloadsRes = await db.query(`SELECT COUNT(*) as count FROM analytics_downloads`);
+        const totalBooksRes = await db.query(`SELECT COUNT(*) as count FROM books`);
+
+        const totalUniqueVisitors = parseInt(totalVisitorsRes.rows[0].count, 10) || 0;
+        const totalPageviews = parseInt(totalPageviewsRes.rows[0].count, 10) || 0;
+        const totalDownloads = parseInt(totalDownloadsRes.rows[0].count, 10) || 0;
+        const totalBooks = parseInt(totalBooksRes.rows[0].count, 10) || 0;
+
+        const sessionStatsRes = await db.query(`
+          SELECT 
+            AVG(duration_seconds) as avg_duration,
+            (COUNT(CASE WHEN bounce = TRUE THEN 1 END)::FLOAT / NULLIF(COUNT(*), 0)) * 100 as bounce_rate
+          FROM analytics_sessions
+        `);
+        const avgSessionDuration = Math.round(parseFloat(sessionStatsRes.rows[0].avg_duration) || 0);
+        const bounceRate = Math.round(parseFloat(sessionStatsRes.rows[0].bounce_rate) || 0);
+
+        const dailyTrendsRes = await db.query(`
+          SELECT DATE(timestamp) as date, COUNT(*) as pageviews, COUNT(DISTINCT visitor_id) as uniques
+          FROM analytics_page_views
+          WHERE timestamp >= now() - INTERVAL '7 days'
+          GROUP BY DATE(timestamp)
+          ORDER BY DATE(timestamp) ASC
+        `);
+
+        const dailyTrends = dailyTrendsRes.rows.map(row => ({
+          date: new Date(row.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
+          pageviews: parseInt(row.pageviews, 10),
+          uniques: parseInt(row.uniques, 10),
+        }));
+
+        const dailyDownloadsRes = await db.query(`
+          SELECT DATE(timestamp) as date, COUNT(*) as count
+          FROM analytics_downloads
+          WHERE timestamp >= now() - INTERVAL '7 days'
+          GROUP BY DATE(timestamp)
+          ORDER BY DATE(timestamp) ASC
+        `);
+        
+        const dailyDownloads = dailyDownloadsRes.rows.map(row => ({
+          date: new Date(row.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
+          count: parseInt(row.count, 10),
+        }));
+
+        const topBooksRes = await db.query(`
+          SELECT b.id, b.title, b.author, b.category, b.cover, COUNT(d.id) as downloads
+          FROM books b
+          JOIN analytics_downloads d ON d.book_id = b.id
+          GROUP BY b.id, b.title, b.author, b.category, b.cover
+          ORDER BY downloads DESC
+          LIMIT 5
+        `);
+
+        const topCategoriesRes = await db.query(`
+          SELECT b.category, COUNT(v.id) as views
+          FROM books b
+          JOIN analytics_book_views v ON v.book_id = b.id
+          GROUP BY b.category
+          ORDER BY views DESC
+          LIMIT 5
+        `);
+
+        const deviceRes = await db.query(`
+          SELECT device_type as name, COUNT(*) as value
+          FROM analytics_visitors
+          WHERE device_type IS NOT NULL
+          GROUP BY device_type
+        `);
+        const browserRes = await db.query(`
+          SELECT browser as name, COUNT(*) as value
+          FROM analytics_visitors
+          WHERE browser IS NOT NULL
+          GROUP BY browser
+          ORDER BY value DESC
+          LIMIT 4
+        `);
+        const osRes = await db.query(`
+          SELECT os as name, COUNT(*) as value
+          FROM analytics_visitors
+          WHERE os IS NOT NULL
+          GROUP BY os
+          ORDER BY value DESC
+          LIMIT 4
+        `);
+
+        const recentViewsRes = await db.query(`
+          SELECT v.timestamp, b.title, b.category, 'view' as type
+          FROM analytics_book_views v
+          JOIN books b ON v.book_id = b.id
+          ORDER BY v.timestamp DESC
+          LIMIT 4
+        `);
+
+        const recentDownloadsRes = await db.query(`
+          SELECT d.timestamp, b.title, b.category, 'download' as type
+          FROM analytics_downloads d
+          JOIN books b ON d.book_id = b.id
+          ORDER BY d.timestamp DESC
+          LIMIT 4
+        `);
+
+        const liveFeed = [...recentViewsRes.rows, ...recentDownloadsRes.rows]
+          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+          .slice(0, 5);
+
+        return res.json({
+          summary: {
+            activeUsers,
+            visitorsToday,
+            visitorsGrowth,
+            pageviewsToday,
+            pageviewsGrowth,
+            downloadsToday,
+            downloadsGrowth,
+            totalUniqueVisitors,
+            totalPageviews,
+            totalDownloads,
+            totalBooks,
+            avgSessionDuration,
+            bounceRate
+          },
+          dailyTrends,
+          dailyDownloads,
+          topBooks: topBooksRes.rows,
+          topCategories: topCategoriesRes.rows,
+          technology: {
+            devices: deviceRes.rows,
+            browsers: browserRes.rows,
+            os: osRes.rows
+          },
+          liveFeed
+        });
+      }
+
+      res.status(400).json({ error: "Invalid mode" });
+    } catch (err: any) {
+      console.error('Express analytics summary error:', err.message);
+      res.status(500).json({ error: "Failed to compile stats" });
+    }
   });
 
   app.get("/api/books", async (req, res) => {

@@ -11,6 +11,7 @@ interface BookCardProps {
 }
 
 export const BookCard: React.FC<BookCardProps> = ({ book, onClick, showOverlay = false, progress = 0 }) => {
+  if (!book) return null;
   return (
     <motion.div 
       className="group cursor-pointer"

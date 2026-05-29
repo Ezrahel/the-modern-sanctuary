@@ -6,6 +6,8 @@ import { applyCors, ensureCsrfCookie, handleOptions, verifyCsrf } from './_lib/h
 import { MODERATION_STATUS, PUBLIC_BOOKS_FILTER } from './_lib/moderation';
 import { clampTextFields, validateBookUploadInput } from './_lib/validate-upload';
 
+let supportsAdvancedSearchCache: boolean | null = null;
+
 export const config = {
   maxDuration: 30,
   api: {
@@ -41,17 +43,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const params: string[] = [];
 
       let orderBy = 'date_added DESC';
-      const supportsAdvancedSearch = await db
-        .query(`
-          SELECT EXISTS (
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_name = 'books'
-              AND column_name = 'search_vector'
-          ) AS has_search_vector
-        `)
-        .then((result) => Boolean(result.rows[0]?.has_search_vector))
-        .catch(() => false);
+      if (supportsAdvancedSearchCache === null) {
+        supportsAdvancedSearchCache = await db
+          .query(`
+            SELECT EXISTS (
+              SELECT 1
+              FROM information_schema.columns
+              WHERE table_name = 'books'
+                AND column_name = 'search_vector'
+            ) AS has_search_vector
+          `)
+          .then((result) => Boolean(result.rows[0]?.has_search_vector))
+          .catch(() => false);
+      }
+      const supportsAdvancedSearch = supportsAdvancedSearchCache;
 
       if (normalizedQuery) {
         params.push(normalizedQuery);
