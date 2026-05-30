@@ -7,6 +7,11 @@ import {
   verifyAdminCredentials,
   clearAdminSessionCookie,
 } from '../_lib/auth';
+import {
+  handleAdminBookById,
+  handleAdminBookFile,
+  handleAdminModerateBook,
+} from '../_lib/admin-book-handlers';
 import { BOOK_LIST_COLUMNS, mapBookRow, parseModerationStatus, sanitizeBookInput } from '../_lib/book-fields';
 import { ensureDbInitialized, MAX_UPLOAD_BYTES } from '../_lib/db';
 import { applyCors, handleOptions } from '../_lib/http';
@@ -477,13 +482,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (resource === 'books') {
-    if (req.method === 'GET') {
-      return handleListBooks(req, res);
+    if (segments.length === 1) {
+      if (req.method === 'GET') {
+        return handleListBooks(req, res);
+      }
+      if (req.method === 'POST') {
+        return handleCreateBook(req, res);
+      }
+      return res.status(405).json({ error: 'Method not allowed' });
     }
-    if (req.method === 'POST') {
-      return handleCreateBook(req, res);
+
+    const bookId = segments[1];
+    const subResource = segments[2];
+    req.query = { ...req.query, id: bookId };
+
+    if (subResource === 'moderate') {
+      return handleAdminModerateBook(req, res);
     }
-    return res.status(405).json({ error: 'Method not allowed' });
+
+    if (subResource === 'file') {
+      return handleAdminBookFile(req, res);
+    }
+
+    if (!subResource) {
+      return handleAdminBookById(req, res);
+    }
+
+    return res.status(404).json({ error: 'Not found' });
   }
 
   console.warn('Admin catch-all 404:', { path, segments, resource, url: req.url, method: req.method });
