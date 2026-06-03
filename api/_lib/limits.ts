@@ -1,8 +1,8 @@
-/** Per-file limit (Vercel serverless request body ~4.5MB including base64 overhead). */
-export const MAX_BOOK_FILE_BYTES = 3 * 1024 * 1024;
+/** Per-file limit (Vercel serverless request body ~6MB including base64 overhead). */
+export const MAX_BOOK_FILE_BYTES = Math.round(3 * 1024 * 1024 * 1.2);
 
 /** Cover images embedded in JSON must stay small. */
-export const MAX_COVER_BYTES = 512 * 1024;
+export const MAX_COVER_BYTES = Math.round(512 * 1024 * 1.2);
 
 export const MAX_BATCH_FILES = 10;
 

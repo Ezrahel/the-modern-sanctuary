@@ -27,7 +27,7 @@ export function validateBookFileSize(fileSize: number): string | null {
     return 'Book file is empty or invalid.';
   }
   if (fileSize > MAX_BOOK_FILE_BYTES) {
-    return `Book file must be ${MAX_BOOK_FILE_BYTES / (1024 * 1024)}MB or smaller.`;
+    return `Book file must be ${(MAX_BOOK_FILE_BYTES / (1024 * 1024)).toFixed(1)}MB or smaller.`;
   }
   return null;
 }
@@ -41,7 +41,7 @@ export function validateCoverPayload(cover: string | undefined): string | null {
   if (cover.startsWith('data:')) {
     const approxBytes = Math.ceil((cover.length * 3) / 4);
     if (approxBytes > MAX_COVER_BYTES) {
-      return `Cover image must be ${MAX_COVER_BYTES / 1024}KB or smaller.`;
+      return `Cover image must be ${(MAX_COVER_BYTES / 1024).toFixed(0)}KB or smaller.`;
     }
     return null;
   }

@@ -21,7 +21,7 @@ export const config = {
   maxDuration: 30,
   api: {
     bodyParser: {
-      sizeLimit: '4.5mb',
+      sizeLimit: '6mb',
     },
   },
 };
@@ -156,7 +156,7 @@ async function handleCreateBook(req: VercelRequest, res: VercelResponse) {
     }
     const fileSizeNum = input.fileSize ?? 0;
     if (fileSizeNum < 1 || fileSizeNum > MAX_UPLOAD_BYTES) {
-      return res.status(400).json({ error: 'Book file must be 3MB or smaller' });
+      return res.status(400).json({ error: `Book file must be ${(MAX_UPLOAD_BYTES / (1024 * 1024)).toFixed(1)}MB or smaller` });
     }
 
     const result = await db.query(

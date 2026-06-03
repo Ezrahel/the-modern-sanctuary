@@ -1058,8 +1058,8 @@ async function startServer() {
       return res.status(400).json({ error: "Pages must be at least 1" });
     }
 
-    if (isNaN(fileSizeNum) || fileSizeNum < 1 || fileSizeNum > 3 * 1024 * 1024) {
-      return res.status(400).json({ error: "Book file must be 3MB or smaller" });
+    if (isNaN(fileSizeNum) || fileSizeNum < 1 || fileSizeNum > Math.round(3 * 1024 * 1024 * 1.2)) {
+      return res.status(400).json({ error: "Book file must be 3.6MB or smaller" });
     }
 
     // XSS Sanitization
