@@ -42,6 +42,26 @@ export function isAllowedBookExtension(fileName: string) {
   return ['pdf', 'epub', 'mobi', 'doc', 'docx'].includes(getExtension(fileName));
 }
 
+/**
+ * Translate low-level HTTP/platform errors into a clear, user-facing message.
+ * Returns null when the error is not something we want to rewrite.
+ */
+export function friendlyFileUploadError(status: number, rawText: string, fileName?: string): string | null {
+  const lowered = (rawText || '').toLowerCase();
+  const tooLarge =
+    status === 413 ||
+    lowered.includes('payload too large') ||
+    lowered.includes('entity too large') ||
+    lowered.includes('too large');
+
+  if (tooLarge) {
+    const label = fileName ? `"${fileName}" is too large to upload` : 'This upload is too large';
+    return `${label}. The server accepts up to 4.5MB total (book file + cover image combined). Please compress the book file or use a smaller cover image before trying again.`;
+  }
+
+  return null;
+}
+
 /** Run async tasks with limited concurrency. */
 export async function mapWithConcurrency<T, R>(
   items: T[],

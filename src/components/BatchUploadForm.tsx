@@ -20,10 +20,12 @@ import {
   MAX_BATCH_CONCURRENCY,
   MAX_BATCH_FILES,
   MAX_BOOK_FILE_BYTES,
+  assertPayloadFits,
   formatMegabytes,
 } from '../lib/uploadLimits';
 import {
   fetchCsrfToken,
+  friendlyFileUploadError,
   getExtension,
   isAllowedBookExtension,
   mapWithConcurrency,
@@ -144,6 +146,24 @@ export const BatchUploadForm: React.FC<BatchUploadFormProps> = ({ onSuccess, onC
 
   const uploadOne = async (batchFile: BatchFile, token: string) => {
     const fileData = await readFileAsDataUrl(batchFile.file);
+
+    const payload = {
+      title: batchFile.title,
+      author: commonMetadata.author,
+      category: commonMetadata.category,
+      description: commonMetadata.description,
+      rating: Number(commonMetadata.rating),
+      pages: 100,
+      format: getFormatFromFileName(batchFile.file.name),
+      cover: DEFAULT_COVER_URL,
+      fileName: batchFile.file.name,
+      fileType: batchFile.file.type,
+      fileSize: batchFile.file.size,
+      fileData,
+    };
+
+    assertPayloadFits(payload, batchFile.file.name);
+
     const response = await fetch(buildApiUrl('/api/books'), {
       method: 'POST',
       credentials: 'include',
@@ -152,24 +172,17 @@ export const BatchUploadForm: React.FC<BatchUploadFormProps> = ({ onSuccess, onC
         'Content-Type': 'application/json',
         'x-xsrf-token': token,
       },
-      body: JSON.stringify({
-        title: batchFile.title,
-        author: commonMetadata.author,
-        category: commonMetadata.category,
-        description: commonMetadata.description,
-        rating: Number(commonMetadata.rating),
-        pages: 100,
-        format: getFormatFromFileName(batchFile.file.name),
-        cover: DEFAULT_COVER_URL,
-        fileName: batchFile.file.name,
-        fileType: batchFile.file.type,
-        fileSize: batchFile.file.size,
-        fileData,
-      }),
+      body: JSON.stringify(payload),
     });
 
     const responseBody = await parseApiResponse(response);
     if (!response.ok) {
+      const friendly = friendlyFileUploadError(
+        response.status,
+        typeof responseBody === 'string' ? responseBody : '',
+        batchFile.file.name
+      );
+      if (friendly) throw new Error(friendly);
       const message =
         responseBody && typeof responseBody === 'object' && 'error' in responseBody
           ? String(responseBody.error)

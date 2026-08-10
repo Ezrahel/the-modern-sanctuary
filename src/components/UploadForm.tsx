@@ -7,9 +7,10 @@ import {
   ALLOWED_BOOK_ACCEPT,
   MAX_BOOK_FILE_BYTES,
   MAX_COVER_BYTES,
+  assertPayloadFits,
   formatMegabytes,
 } from '../lib/uploadLimits';
-import { fetchCsrfToken, getExtension, isAllowedBookExtension, parseApiResponse } from '../lib/apiClient';
+import { fetchCsrfToken, friendlyFileUploadError, getExtension, isAllowedBookExtension, parseApiResponse } from '../lib/apiClient';
 import { UploadGuidelines } from './UploadGuidelines';
 
 interface UploadFormProps {
@@ -102,6 +103,23 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
         coverMode === 'file' && formData.coverFile ? await readFileAsDataUrl(formData.coverFile) : formData.cover;
       const bookFileData = formData.bookFile ? await readFileAsDataUrl(formData.bookFile) : '';
 
+      const payload = {
+        title: formData.title,
+        author: formData.author,
+        category: formData.category,
+        description: formData.description,
+        rating: Number(formData.rating),
+        pages: Number(formData.pages),
+        format: formData.format,
+        cover: coverData,
+        fileName: formData.bookFile?.name || '',
+        fileType: formData.bookFile?.type || '',
+        fileSize: formData.bookFile?.size || 0,
+        fileData: bookFileData,
+      };
+
+      assertPayloadFits(payload, formData.bookFile?.name);
+
       const response = await fetch(buildApiUrl('/api/books'), {
         method: 'POST',
         credentials: 'include',
@@ -110,25 +128,14 @@ export const UploadForm: React.FC<UploadFormProps> = ({ onSuccess, onCancel }) =
           'Content-Type': 'application/json',
           'x-xsrf-token': token,
         },
-        body: JSON.stringify({
-          title: formData.title,
-          author: formData.author,
-          category: formData.category,
-          description: formData.description,
-          rating: Number(formData.rating),
-          pages: Number(formData.pages),
-          format: formData.format,
-          cover: coverData,
-          fileName: formData.bookFile?.name || '',
-          fileType: formData.bookFile?.type || '',
-          fileSize: formData.bookFile?.size || 0,
-          fileData: bookFileData,
-        }),
+        body: JSON.stringify(payload),
       });
 
       const responseBody = await parseApiResponse(response);
 
       if (!response.ok) {
+        const friendly = friendlyFileUploadError(response.status, typeof responseBody === 'string' ? responseBody : '');
+        if (friendly) throw new Error(friendly);
         if (responseBody && typeof responseBody === 'object' && 'error' in responseBody) {
           throw new Error(String(responseBody.error));
         }
